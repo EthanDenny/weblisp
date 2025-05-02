@@ -3,4 +3,12 @@ name = "compiler-with-frontend"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "mylisplib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mylispbin"
+path = "src/main.rs"
+
 [dependencies]
