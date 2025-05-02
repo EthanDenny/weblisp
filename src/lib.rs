@@ -1,12 +1,15 @@
+// Error strings
+
 const MISMATCHED_PAREN_ERROR: &str = "Closing parenthesis without opening parenthesis";
 const UNCLOSED_PAREN_ERROR: &str = "Unclosed parenthesis";
+
+// Parsing types and functions
 
 #[derive(PartialEq, Debug)]
 pub enum TokenKind {
     LeftParen,
     RightParen,
     Integer(i64),
-    End,
     Error(String),
     Unknown,
 }
@@ -88,48 +91,68 @@ pub fn parse(text: String) -> Vec<Token> {
         return vec![Token::new(TokenKind::error(UNCLOSED_PAREN_ERROR))];
     }
 
-    tokens.push(Token::new(TokenKind::End));
-
     tokens
 }
 
-pub fn compare_token_vecs(a: &Vec<Token>, b: &Vec<Token>) -> bool {
-    for (ta, tb) in a.iter().zip(b.iter()) {
-        if ta.kind != tb.kind {
-            return false;
+pub fn parse_str(text: &str) -> Vec<Token> {
+    parse(text.to_string())
+}
+
+// Tree types and functions
+
+#[derive(PartialEq, Debug)]
+pub enum Element {
+    List(Vec<Element>),
+    Integer(i64),
+}
+
+pub fn construct_list(tokens: &mut std::vec::IntoIter<Token>) -> Element {
+    let mut children = Vec::new();
+
+    while let Some(token) = tokens.next() {
+        match token.kind {
+            TokenKind::Integer(v) => children.push(Element::Integer(v)),
+            TokenKind::LeftParen => children.push(construct_list(tokens)),
+            TokenKind::RightParen => break,
+            _ => panic!("{token:?} cannot be constructed on"),
         }
     }
 
-    true
+    Element::List(children)
 }
 
-pub fn test_parsing(text: &str, target: Vec<TokenKind>) {
-    let output = parse(text.to_string());
-
-    for (t, k) in output.into_iter().zip(target.into_iter()) {
-        if t.kind != k {
-            assert!(false);
-        }
-    }
-
-    assert!(true);
+pub fn construct(tokens: Vec<Token>) -> Element {
+    construct_list(&mut tokens.into_iter())
 }
+
+// Tests
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // Parser tests
+
+    fn test_parsing(text: &str, target: Vec<TokenKind>) {
+        let output = parse_str(text);
+
+        for (t, k) in output.into_iter().zip(target.into_iter()) {
+            if t.kind != k {
+                assert!(false);
+            }
+        }
+
+        assert!(true);
+    }
+
     #[test]
     fn empty() {
-        test_parsing("", vec![TokenKind::End]);
+        test_parsing("", vec![]);
     }
 
     #[test]
     fn parens() {
-        test_parsing(
-            "()",
-            vec![TokenKind::LeftParen, TokenKind::RightParen, TokenKind::End],
-        );
+        test_parsing("()", vec![TokenKind::LeftParen, TokenKind::RightParen]);
 
         test_parsing(
             "(( ( )) )",
@@ -140,7 +163,6 @@ mod tests {
                 TokenKind::RightParen,
                 TokenKind::RightParen,
                 TokenKind::RightParen,
-                TokenKind::End,
             ],
         );
 
@@ -151,14 +173,11 @@ mod tests {
 
     #[test]
     fn numbers() {
-        test_parsing("1", vec![TokenKind::Integer(1), TokenKind::End]);
+        test_parsing("1", vec![TokenKind::Integer(1)]);
 
-        test_parsing(
-            "1 2",
-            vec![TokenKind::Integer(1), TokenKind::Integer(2), TokenKind::End],
-        );
+        test_parsing("1 2", vec![TokenKind::Integer(1), TokenKind::Integer(2)]);
 
-        test_parsing("12345", vec![TokenKind::Integer(12345), TokenKind::End]);
+        test_parsing("12345", vec![TokenKind::Integer(12345)]);
 
         test_parsing(
             "12y45",
@@ -166,7 +185,6 @@ mod tests {
                 TokenKind::Integer(12),
                 TokenKind::Unknown,
                 TokenKind::Integer(45),
-                TokenKind::End,
             ],
         );
 
@@ -178,7 +196,6 @@ mod tests {
                 TokenKind::Integer(2),
                 TokenKind::Integer(3),
                 TokenKind::RightParen,
-                TokenKind::End,
             ],
         );
 
@@ -194,8 +211,48 @@ mod tests {
                 TokenKind::Integer(5),
                 TokenKind::RightParen,
                 TokenKind::RightParen,
-                TokenKind::End,
             ],
+        );
+    }
+
+    // Tree tests
+
+    fn test_trees(text: &str, target: Element) {
+        let tokens = parse_str(text);
+        let tree = construct(tokens);
+
+        // Wrap in a list to mimic the global list produced during construction
+        let wrapped_target = Element::List(vec![target]);
+
+        assert_eq!(tree, wrapped_target)
+    }
+
+    #[test]
+    pub fn lists() {
+        test_trees("()", Element::List(vec![]));
+
+        test_trees("(1)", Element::List(vec![Element::Integer(1)]));
+
+        test_trees(
+            "(1 2 3)",
+            Element::List(vec![
+                Element::Integer(1),
+                Element::Integer(2),
+                Element::Integer(3),
+            ]),
+        );
+
+        test_trees(
+            "(1 2 (3 4 5))",
+            Element::List(vec![
+                Element::Integer(1),
+                Element::Integer(2),
+                Element::List(vec![
+                    Element::Integer(3),
+                    Element::Integer(4),
+                    Element::Integer(5),
+                ]),
+            ]),
         );
     }
 }
