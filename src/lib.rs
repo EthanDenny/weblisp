@@ -9,13 +9,17 @@ const UNCLOSED_PAREN_ERROR: &str = "Unclosed parenthesis";
 pub enum TokenKind {
     LeftParen,
     RightParen,
+    Atom(String),
     Integer(i64),
     Error(String),
-    Unknown,
 }
 
 impl TokenKind {
-    fn error(msg: &str) -> TokenKind {
+    pub fn atom(inner: &str) -> TokenKind {
+        TokenKind::Atom(inner.to_string())
+    }
+
+    pub fn error(msg: &str) -> TokenKind {
         TokenKind::Error(msg.to_string())
     }
 }
@@ -26,7 +30,7 @@ pub struct Token {
 }
 
 impl Token {
-    fn new(kind: TokenKind) -> Token {
+    pub fn new(kind: TokenKind) -> Token {
         Token { kind }
     }
 }
@@ -50,32 +54,60 @@ pub fn parse(text: String) -> Vec<Token> {
                     Some(TokenKind::error(MISMATCHED_PAREN_ERROR))
                 }
             }
+            ' ' => None,
             _ if c.is_digit(10) => {
                 let mut num = String::from(c);
+                let mut bad_char = None;
 
                 while let Some(&p) = chars.peek() {
-                    if p.is_digit(10) {
-                        num.push(p);
-                        chars.next();
-                    } else {
-                        break;
+                    match p {
+                        _ if p.is_digit(10) => {
+                            num.push(p);
+                            chars.next();
+                        }
+                        '(' | ')' => break,
+                        _ if p.is_whitespace() => break,
+                        _ => {
+                            bad_char = Some(p);
+                            break;
+                        }
                     }
                 }
 
-                let parsed = num.parse::<i64>();
+                if let Some(c) = bad_char {
+                    Some(TokenKind::Error(format!(
+                        "'{c}' cannot be part of an integer",
+                    )))
+                } else {
+                    let parsed = num.parse::<i64>();
 
-                match parsed {
-                    Ok(v) => Some(TokenKind::Integer(v)),
+                    match parsed {
+                        Ok(v) => Some(TokenKind::Integer(v)),
 
-                    // TODO: Figure out a way to test this (shoould theoretically never trigger)
-                    Err(_) => Some(TokenKind::Error(format!(
-                        "Tried to parse integer \"{}\", but something went wrong",
-                        num,
-                    ))),
+                        // TODO: Figure out a way to test this (shoould theoretically never trigger)
+                        Err(_) => Some(TokenKind::Error(format!(
+                            "Tried to parse integer \"{}\", but something went wrong",
+                            num,
+                        ))),
+                    }
                 }
             }
-            ' ' => None,
-            _ => Some(TokenKind::Unknown),
+            _ => {
+                let mut inner = String::from(c);
+
+                while let Some(&p) = chars.peek() {
+                    match p {
+                        '(' | ')' => break,
+                        _ if p.is_whitespace() => break,
+                        _ => {
+                            inner.push(p);
+                            chars.next();
+                        }
+                    }
+                }
+
+                Some(TokenKind::Atom(inner))
+            }
         };
 
         if let Some(kind) = kind {
@@ -104,6 +136,13 @@ pub fn parse_str(text: &str) -> Vec<Token> {
 pub enum Element {
     List(Vec<Element>),
     Integer(i64),
+    Atom(String),
+}
+
+impl Element {
+    pub fn atom(inner: &str) -> Element {
+        Element::Atom(inner.to_string())
+    }
 }
 
 pub fn construct_list(tokens: &mut std::vec::IntoIter<Token>) -> Element {
@@ -111,6 +150,7 @@ pub fn construct_list(tokens: &mut std::vec::IntoIter<Token>) -> Element {
 
     while let Some(token) = tokens.next() {
         match token.kind {
+            TokenKind::Atom(inner) => children.push(Element::Atom(inner)),
             TokenKind::Integer(v) => children.push(Element::Integer(v)),
             TokenKind::LeftParen => children.push(construct_list(tokens)),
             TokenKind::RightParen => break,
@@ -137,12 +177,8 @@ mod tests {
         let output = parse_str(text);
 
         for (t, k) in output.into_iter().zip(target.into_iter()) {
-            if t.kind != k {
-                assert!(false);
-            }
+            assert_eq!(t.kind, k);
         }
-
-        assert!(true);
     }
 
     #[test]
@@ -181,11 +217,7 @@ mod tests {
 
         test_parsing(
             "12y45",
-            vec![
-                TokenKind::Integer(12),
-                TokenKind::Unknown,
-                TokenKind::Integer(45),
-            ],
+            vec![TokenKind::error("'y' cannot be part of an integer")],
         );
 
         test_parsing(
@@ -209,6 +241,50 @@ mod tests {
                 TokenKind::Integer(3),
                 TokenKind::Integer(4),
                 TokenKind::Integer(5),
+                TokenKind::RightParen,
+                TokenKind::RightParen,
+            ],
+        );
+    }
+
+    #[test]
+    fn atoms() {
+        test_parsing("a", vec![TokenKind::atom("a")]);
+
+        test_parsing(
+            "a + _",
+            vec![
+                TokenKind::atom("a"),
+                TokenKind::atom("+"),
+                TokenKind::atom("_"),
+            ],
+        );
+
+        test_parsing("abc", vec![TokenKind::atom("abc")]);
+
+        test_parsing("ab1cd", vec![TokenKind::atom("ab1cd")]);
+
+        test_parsing(
+            "(a + _)",
+            vec![
+                TokenKind::LeftParen,
+                TokenKind::atom("a"),
+                TokenKind::atom("+"),
+                TokenKind::atom("_"),
+                TokenKind::RightParen,
+            ],
+        );
+
+        test_parsing(
+            "(a + (c d e))",
+            vec![
+                TokenKind::LeftParen,
+                TokenKind::atom("a"),
+                TokenKind::atom("+"),
+                TokenKind::LeftParen,
+                TokenKind::atom("c"),
+                TokenKind::atom("d"),
+                TokenKind::atom("e"),
                 TokenKind::RightParen,
                 TokenKind::RightParen,
             ],
@@ -252,6 +328,40 @@ mod tests {
                     Element::Integer(4),
                     Element::Integer(5),
                 ]),
+            ]),
+        );
+
+        test_trees(
+            "(+ (+ 1 2) (+ 3 4))",
+            Element::List(vec![
+                Element::atom("+"),
+                Element::List(vec![
+                    Element::atom("+"),
+                    Element::Integer(1),
+                    Element::Integer(2),
+                ]),
+                Element::List(vec![
+                    Element::atom("+"),
+                    Element::Integer(3),
+                    Element::Integer(4),
+                ]),
+            ]),
+        );
+
+        test_trees(
+            "((head (print + -)) 1 2 3)",
+            Element::List(vec![
+                Element::List(vec![
+                    Element::atom("head"),
+                    Element::List(vec![
+                        Element::atom("print"),
+                        Element::atom("+"),
+                        Element::atom("-"),
+                    ]),
+                ]),
+                Element::Integer(1),
+                Element::Integer(2),
+                Element::Integer(3),
             ]),
         );
     }
