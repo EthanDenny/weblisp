@@ -152,7 +152,7 @@ pub fn parse_str(text: &str) -> Vec<Token> {
 
 // Tree types and functions
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone)]
 pub enum Element {
     List(Vec<Element>),
     Integer(i64),
@@ -189,6 +189,77 @@ pub fn construct_list(tokens: &mut std::vec::IntoIter<Token>) -> Element {
 
 pub fn construct(tokens: Vec<Token>) -> Element {
     construct_list(&mut tokens.into_iter())
+}
+
+// Eval
+
+pub fn eval_function(f: Element, args: Vec<Element>) -> Element {
+    match f {
+        Element::Atom(func) => match func.as_str() {
+            "cons" => Element::List(args.into_iter().map(|c| eval(c)).collect()),
+            "quote" => {
+                if args.len() == 1 {
+                    let first = &args[0];
+                    match first {
+                        Element::Quote(inner) | Element::Atom(inner) => {
+                            Element::Quote(inner.clone())
+                        }
+                        _ => panic!("Cannot quote {first:?}"),
+                    }
+                } else {
+                    Element::List(
+                        args.into_iter()
+                            .map(|arg| match arg {
+                                Element::Quote(inner) | Element::Atom(inner) => {
+                                    Element::Quote(inner)
+                                }
+                                _ => panic!("Cannot quote {arg:?}"),
+                            })
+                            .collect(),
+                    )
+                }
+            }
+            _ => todo!(), // Add lookup when variables are added
+        },
+        _ => panic!("Cannot evaluate non-atom function: \"{f:?}\""),
+    }
+}
+
+pub fn eval(e: Element) -> Element {
+    match e {
+        Element::List(children) => {
+            let mut children_iter = children.into_iter().peekable();
+            let first = children_iter.next();
+
+            if let Some(first) = first {
+                match first {
+                    Element::Atom(_) => eval_function(first, children_iter.collect()),
+                    Element::List(_) => {
+                        let first_evaluated = eval(first);
+
+                        if let Element::Atom(_) = first_evaluated {
+                            eval_function(first_evaluated, children_iter.collect())
+                        } else {
+                            Element::List(
+                                [
+                                    vec![first_evaluated],
+                                    children_iter.map(|c| eval(c)).collect(),
+                                ]
+                                .concat(),
+                            )
+                        }
+                    }
+                    _ => Element::List(
+                        [vec![eval(first)], children_iter.map(|c| eval(c)).collect()].concat(),
+                    ),
+                }
+            } else {
+                Element::List(vec![])
+            }
+        }
+        Element::Quote(inner) => Element::Atom(inner),
+        _ => e,
+    }
 }
 
 // Tests
@@ -330,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    pub fn construction() {
+    fn construction() {
         test_construction("()", Element::List(vec![]));
 
         test_construction("(1)", Element::List(vec![Element::Integer(1)]));
@@ -389,6 +460,56 @@ mod tests {
                 Element::Integer(2),
                 Element::Integer(3),
             ]),
+        );
+    }
+
+    // Eval tests
+
+    fn test_eval(text: &str, target: Element) {
+        let tokens = parse_str(text);
+        let tree = construct(tokens);
+        let result = eval(tree);
+
+        assert_eq!(result, target)
+    }
+
+    #[test]
+    fn basic_evals() {
+        test_eval("", Element::List(vec![]));
+
+        test_eval(
+            "1 (2 3)",
+            Element::List(vec![
+                Element::Integer(1),
+                Element::List(vec![Element::Integer(2), Element::Integer(3)]),
+            ]),
+        );
+    }
+
+    #[test]
+    fn cons() {
+        test_eval(
+            "(cons 3) (cons (3 2) ('print 1))",
+            Element::List(vec![
+                Element::List(vec![Element::Integer(3)]),
+                Element::List(vec![
+                    Element::List(vec![Element::Integer(3), Element::Integer(2)]),
+                    Element::List(vec![Element::atom("print"), Element::Integer(1)]),
+                ]),
+            ]),
+        );
+    }
+
+    #[test]
+    fn quote() {
+        test_eval("(quote a)", Element::List(vec![Element::quote("a")]));
+        test_eval(
+            "(quote a 'b c)",
+            Element::List(vec![Element::List(vec![
+                Element::quote("a"),
+                Element::quote("b"),
+                Element::quote("c"),
+            ])]),
         );
     }
 }
