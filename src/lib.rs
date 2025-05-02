@@ -2,6 +2,7 @@
 
 const MISMATCHED_PAREN_ERROR: &str = "Closing parenthesis without opening parenthesis";
 const UNCLOSED_PAREN_ERROR: &str = "Unclosed parenthesis";
+const DOUBLE_QUOTE_ERROR: &str = "Double quoting is not allowed";
 
 // Parsing types and functions
 
@@ -10,6 +11,7 @@ pub enum TokenKind {
     LeftParen,
     RightParen,
     Atom(String),
+    Quote(String),
     Integer(i64),
     Error(String),
 }
@@ -17,6 +19,10 @@ pub enum TokenKind {
 impl TokenKind {
     pub fn atom(inner: &str) -> TokenKind {
         TokenKind::Atom(inner.to_string())
+    }
+
+    pub fn quote(inner: &str) -> TokenKind {
+        TokenKind::Quote(inner.to_string())
     }
 
     pub fn error(msg: &str) -> TokenKind {
@@ -93,20 +99,34 @@ pub fn parse(text: String) -> Vec<Token> {
                 }
             }
             _ => {
-                let mut inner = String::from(c);
+                let is_quote = c == '\'';
 
-                while let Some(&p) = chars.peek() {
-                    match p {
-                        '(' | ')' => break,
-                        _ if p.is_whitespace() => break,
-                        _ => {
-                            inner.push(p);
-                            chars.next();
+                let mut inner = if is_quote {
+                    String::new()
+                } else {
+                    String::from(c)
+                };
+
+                if is_quote && chars.peek() == Some(&'\'') {
+                    Some(TokenKind::error(DOUBLE_QUOTE_ERROR))
+                } else {
+                    while let Some(&p) = chars.peek() {
+                        match p {
+                            '(' | ')' => break,
+                            _ if p.is_whitespace() => break,
+                            _ => {
+                                inner.push(p);
+                                chars.next();
+                            }
                         }
                     }
-                }
 
-                Some(TokenKind::Atom(inner))
+                    if is_quote {
+                        Some(TokenKind::Quote(inner))
+                    } else {
+                        Some(TokenKind::Atom(inner))
+                    }
+                }
             }
         };
 
@@ -137,11 +157,16 @@ pub enum Element {
     List(Vec<Element>),
     Integer(i64),
     Atom(String),
+    Quote(String),
 }
 
 impl Element {
     pub fn atom(inner: &str) -> Element {
         Element::Atom(inner.to_string())
+    }
+
+    pub fn quote(inner: &str) -> Element {
+        Element::Quote(inner.to_string())
     }
 }
 
@@ -151,6 +176,7 @@ pub fn construct_list(tokens: &mut std::vec::IntoIter<Token>) -> Element {
     while let Some(token) = tokens.next() {
         match token.kind {
             TokenKind::Atom(inner) => children.push(Element::Atom(inner)),
+            TokenKind::Quote(inner) => children.push(Element::Quote(inner)),
             TokenKind::Integer(v) => children.push(Element::Integer(v)),
             TokenKind::LeftParen => children.push(construct_list(tokens)),
             TokenKind::RightParen => break,
@@ -248,39 +274,39 @@ mod tests {
     }
 
     #[test]
-    fn atoms() {
+    fn atoms_and_quotes() {
         test_parsing("a", vec![TokenKind::atom("a")]);
 
         test_parsing(
-            "a + _",
+            "a '+ _",
             vec![
                 TokenKind::atom("a"),
-                TokenKind::atom("+"),
+                TokenKind::quote("+"),
                 TokenKind::atom("_"),
             ],
         );
 
         test_parsing("abc", vec![TokenKind::atom("abc")]);
 
-        test_parsing("ab1cd", vec![TokenKind::atom("ab1cd")]);
+        test_parsing("'ab1cd", vec![TokenKind::quote("ab1cd")]);
 
         test_parsing(
-            "(a + _)",
+            "(a '+ '_)",
             vec![
                 TokenKind::LeftParen,
                 TokenKind::atom("a"),
-                TokenKind::atom("+"),
-                TokenKind::atom("_"),
+                TokenKind::quote("+"),
+                TokenKind::quote("_"),
                 TokenKind::RightParen,
             ],
         );
 
         test_parsing(
-            "(a + (c d e))",
+            "(a '+ (c d e))",
             vec![
                 TokenKind::LeftParen,
                 TokenKind::atom("a"),
-                TokenKind::atom("+"),
+                TokenKind::quote("+"),
                 TokenKind::LeftParen,
                 TokenKind::atom("c"),
                 TokenKind::atom("d"),
@@ -291,9 +317,9 @@ mod tests {
         );
     }
 
-    // Tree tests
+    // Construction tests
 
-    fn test_trees(text: &str, target: Element) {
+    fn test_construction(text: &str, target: Element) {
         let tokens = parse_str(text);
         let tree = construct(tokens);
 
@@ -304,12 +330,12 @@ mod tests {
     }
 
     #[test]
-    pub fn lists() {
-        test_trees("()", Element::List(vec![]));
+    pub fn construction() {
+        test_construction("()", Element::List(vec![]));
 
-        test_trees("(1)", Element::List(vec![Element::Integer(1)]));
+        test_construction("(1)", Element::List(vec![Element::Integer(1)]));
 
-        test_trees(
+        test_construction(
             "(1 2 3)",
             Element::List(vec![
                 Element::Integer(1),
@@ -318,7 +344,7 @@ mod tests {
             ]),
         );
 
-        test_trees(
+        test_construction(
             "(1 2 (3 4 5))",
             Element::List(vec![
                 Element::Integer(1),
@@ -331,7 +357,7 @@ mod tests {
             ]),
         );
 
-        test_trees(
+        test_construction(
             "(+ (+ 1 2) (+ 3 4))",
             Element::List(vec![
                 Element::atom("+"),
@@ -348,15 +374,15 @@ mod tests {
             ]),
         );
 
-        test_trees(
-            "((head (print + -)) 1 2 3)",
+        test_construction(
+            "((head ('print '+ '-)) 1 2 3)",
             Element::List(vec![
                 Element::List(vec![
                     Element::atom("head"),
                     Element::List(vec![
-                        Element::atom("print"),
-                        Element::atom("+"),
-                        Element::atom("-"),
+                        Element::quote("print"),
+                        Element::quote("+"),
+                        Element::quote("-"),
                     ]),
                 ]),
                 Element::Integer(1),
