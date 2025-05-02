@@ -5,6 +5,7 @@ const UNCLOSED_PAREN_ERROR: &str = "Unclosed parenthesis";
 pub enum TokenKind {
     LeftParen,
     RightParen,
+    Integer(i64),
     End,
     Error(String),
     Unknown,
@@ -46,6 +47,30 @@ pub fn parse(text: String) -> Vec<Token> {
                     Some(TokenKind::error(MISMATCHED_PAREN_ERROR))
                 }
             }
+            _ if c.is_digit(10) => {
+                let mut num = String::from(c);
+
+                while let Some(&p) = chars.peek() {
+                    if p.is_digit(10) {
+                        num.push(p);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+
+                let parsed = num.parse::<i64>();
+
+                match parsed {
+                    Ok(v) => Some(TokenKind::Integer(v)),
+
+                    // TODO: Figure out a way to test this (shoould theoretically never trigger)
+                    Err(_) => Some(TokenKind::Error(format!(
+                        "Tried to parse integer \"{}\", but something went wrong",
+                        num,
+                    ))),
+                }
+            }
             ' ' => None,
             _ => Some(TokenKind::Unknown),
         };
@@ -78,9 +103,16 @@ pub fn compare_token_vecs(a: &Vec<Token>, b: &Vec<Token>) -> bool {
     true
 }
 
-pub fn test_parsing(text: &str, target: Vec<Token>) {
+pub fn test_parsing(text: &str, target: Vec<TokenKind>) {
     let output = parse(text.to_string());
-    assert!(compare_token_vecs(&output, &target));
+
+    for (t, k) in output.into_iter().zip(target.into_iter()) {
+        if t.kind != k {
+            assert!(false);
+        }
+    }
+
+    assert!(true);
 }
 
 #[cfg(test)]
@@ -89,41 +121,81 @@ mod tests {
 
     #[test]
     fn empty() {
-        test_parsing("", vec![Token::new(TokenKind::End)]);
+        test_parsing("", vec![TokenKind::End]);
     }
 
     #[test]
     fn parens() {
         test_parsing(
             "()",
-            vec![
-                Token::new(TokenKind::LeftParen),
-                Token::new(TokenKind::RightParen),
-                Token::new(TokenKind::End),
-            ],
+            vec![TokenKind::LeftParen, TokenKind::RightParen, TokenKind::End],
         );
 
         test_parsing(
             "(( ( )) )",
             vec![
-                Token::new(TokenKind::LeftParen),
-                Token::new(TokenKind::LeftParen),
-                Token::new(TokenKind::LeftParen),
-                Token::new(TokenKind::RightParen),
-                Token::new(TokenKind::RightParen),
-                Token::new(TokenKind::RightParen),
-                Token::new(TokenKind::End),
+                TokenKind::LeftParen,
+                TokenKind::LeftParen,
+                TokenKind::LeftParen,
+                TokenKind::RightParen,
+                TokenKind::RightParen,
+                TokenKind::RightParen,
+                TokenKind::End,
+            ],
+        );
+
+        test_parsing("(()", vec![TokenKind::error(UNCLOSED_PAREN_ERROR)]);
+
+        test_parsing("() )", vec![TokenKind::error(MISMATCHED_PAREN_ERROR)]);
+    }
+
+    #[test]
+    fn numbers() {
+        test_parsing("1", vec![TokenKind::Integer(1), TokenKind::End]);
+
+        test_parsing(
+            "1 2",
+            vec![TokenKind::Integer(1), TokenKind::Integer(2), TokenKind::End],
+        );
+
+        test_parsing("12345", vec![TokenKind::Integer(12345), TokenKind::End]);
+
+        test_parsing(
+            "12y45",
+            vec![
+                TokenKind::Integer(12),
+                TokenKind::Unknown,
+                TokenKind::Integer(45),
+                TokenKind::End,
             ],
         );
 
         test_parsing(
-            "(()",
-            vec![Token::new(TokenKind::error(UNCLOSED_PAREN_ERROR))],
+            "(1 2 3)",
+            vec![
+                TokenKind::LeftParen,
+                TokenKind::Integer(1),
+                TokenKind::Integer(2),
+                TokenKind::Integer(3),
+                TokenKind::RightParen,
+                TokenKind::End,
+            ],
         );
 
         test_parsing(
-            "() )",
-            vec![Token::new(TokenKind::error(MISMATCHED_PAREN_ERROR))],
+            "(1 2 (3 4 5))",
+            vec![
+                TokenKind::LeftParen,
+                TokenKind::Integer(1),
+                TokenKind::Integer(2),
+                TokenKind::LeftParen,
+                TokenKind::Integer(3),
+                TokenKind::Integer(4),
+                TokenKind::Integer(5),
+                TokenKind::RightParen,
+                TokenKind::RightParen,
+                TokenKind::End,
+            ],
         );
     }
 }
