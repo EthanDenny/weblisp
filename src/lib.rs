@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::{collections::HashMap, rc::Rc};
 
 // Error strings
 
@@ -256,12 +256,26 @@ pub fn construct(tokens: Vec<Token>) -> Vec<Node> {
     nodes
 }
 
-// Eval functions
+// Eval types functions
 
-pub fn eval_arg(arg: Option<NodeValue>) -> Option<NodeValue> {
-    match arg {
-        Some(NodeValue::List(ptr)) => Some(eval(ptr.as_ref().clone()).value),
-        _ => arg,
+#[derive(Debug)]
+pub struct Scope {
+    vars: HashMap<String, NodeValue>,
+}
+
+impl Scope {
+    pub fn new() -> Scope {
+        Scope {
+            vars: HashMap::new(),
+        }
+    }
+
+    pub fn set(&mut self, name: String, value: NodeValue) {
+        self.vars.insert(name, value);
+    }
+
+    pub fn get(&mut self, name: String) -> Option<NodeValue> {
+        self.vars.get(&name).cloned()
     }
 }
 
@@ -270,11 +284,7 @@ pub fn extract_args(arg_head: Option<Rc<Node>>) -> Vec<NodeValue> {
         let args_ref = args.as_ref();
 
         let head_value = args_ref.value.clone();
-        let head_eval = match head_value {
-            NodeValue::List(ptr) => eval(ptr.as_ref().clone()).value,
-            _ => head_value,
-        };
-        let head_vec = vec![head_eval];
+        let head_vec = vec![head_value];
 
         let tail_vec = extract_args(args_ref.next.clone());
 
@@ -288,14 +298,63 @@ pub fn extract_args(arg_head: Option<Rc<Node>>) -> Vec<NodeValue> {
     }
 }
 
-pub fn eval_fn(func_name: String, args_list: Option<Rc<Node>>) -> Node {
-    let func_str = func_name.as_str();
+pub fn eval_args(arg_head: Option<Rc<Node>>, scope: &mut Scope) -> Vec<NodeValue> {
+    let args = extract_args(arg_head);
+    args.into_iter()
+        .map(|arg| eval(Node::leaf(arg), scope).value)
+        .collect()
+}
+
+pub fn eval_macro(macro_name: &str, args_list: Option<Rc<Node>>, scope: &mut Scope) -> Node {
     let args = extract_args(args_list);
+
+    match macro_name {
+        "let" => {
+            if let (Some(NodeValue::Atom(var_name)), Some(var_value_raw)) =
+                (args.get(0), args.get(1))
+            {
+                let var_value = eval_value(var_value_raw.clone(), scope);
+
+                scope.set(var_name.clone(), var_value.clone());
+
+                Node::leaf(var_value)
+            } else {
+                panic!("Cannot set variable, incorrect argument types")
+            }
+        }
+        "def" => {
+            if let (
+                Some(NodeValue::Atom(func_name)),
+                Some(NodeValue::List(func_args)),
+                Some(NodeValue::List(func_body)),
+            ) = (args.get(0), args.get(1), args.get(2))
+            {
+                println!("{:?}\n{:?}\n{:?}", func_name, func_args, func_body)
+            } else {
+                panic!("Cannot declare function, incorrect argument types")
+            }
+
+            Node::nil()
+        }
+        _ => unreachable!(),
+    }
+}
+
+pub fn eval_fn(func_name: String, args_list: Option<Rc<Node>>, scope: &mut Scope) -> Node {
+    let func_str = func_name.as_str();
+
+    // Escape to special-case macro land if necessary
+    // Using if-let here because it will be nice to add future macros
+    if let "let" | "def" = func_str {
+        return eval_macro(func_str, args_list, scope);
+    }
+
+    // Back to our regularly scheduled programming
+
+    let args = eval_args(args_list, scope);
 
     match func_str {
         "+" | "*" | "/" => {
-            assert_eq!(args.len(), 2);
-
             if let (Some(NodeValue::Integer(v0)), Some(NodeValue::Integer(v1))) =
                 (args.get(0), args.get(1))
             {
@@ -325,10 +384,20 @@ pub fn eval_fn(func_name: String, args_list: Option<Rc<Node>>) -> Node {
     }
 }
 
-pub fn eval(mut expr: Node) -> Node {
+pub fn eval_value(value: NodeValue, scope: &mut Scope) -> NodeValue {
+    eval(Node::leaf(value), scope).value
+}
+
+pub fn eval(mut expr: Node, scope: &mut Scope) -> Node {
     match &expr.value {
-        NodeValue::Atom(func_name) => eval_fn(func_name.clone(), expr.next.clone()),
-        NodeValue::List(ptr) => eval(ptr.as_ref().clone()),
+        NodeValue::Atom(atom) => {
+            if let Some(value) = scope.get(atom.clone()) {
+                Node::leaf(value)
+            } else {
+                eval_fn(atom.clone(), expr.next.clone(), scope)
+            }
+        }
+        NodeValue::List(ptr) => eval(ptr.as_ref().clone(), scope),
         NodeValue::Quote(inner) => {
             expr.value = NodeValue::Atom(inner.clone());
             expr
@@ -525,7 +594,12 @@ mod tests {
     fn test_eval(text: &str, target: Vec<Node>) {
         let tokens = parse_str(text);
         let block = construct(tokens);
-        let result: Vec<Node> = block.into_iter().map(|expr| eval(expr)).collect();
+
+        let mut scope = Scope::new();
+        let result: Vec<Node> = block
+            .into_iter()
+            .map(|expr| eval(expr, &mut scope))
+            .collect();
 
         assert_eq!(result, target)
     }
@@ -600,5 +674,32 @@ mod tests {
         test_eval("(- 2)", vec![Node::leaf(NodeValue::Integer(-2))]);
         test_eval("(- 0)", vec![Node::leaf(NodeValue::Integer(0))]);
         test_eval("(+ 3 (- 2))", vec![Node::leaf(NodeValue::Integer(1))]);
+    }
+
+    #[test]
+    fn assignment() {
+        test_eval(
+            "(let x 2) (+ x 2)",
+            vec![
+                Node::leaf(NodeValue::Integer(2)),
+                Node::leaf(NodeValue::Integer(4)),
+            ],
+        );
+
+        test_eval(
+            "(let x 3) (+ x x)",
+            vec![
+                Node::leaf(NodeValue::Integer(3)),
+                Node::leaf(NodeValue::Integer(6)),
+            ],
+        );
+
+        test_eval(
+            "(let x 2) (+ (/ 2 2) x)",
+            vec![
+                Node::leaf(NodeValue::Integer(2)),
+                Node::leaf(NodeValue::Integer(3)),
+            ],
+        );
     }
 }
