@@ -1,4 +1,4 @@
-use std::{collections::HashMap, rc::Rc};
+use std::{collections::HashMap, fmt, rc::Rc};
 
 // Error strings
 
@@ -62,7 +62,7 @@ pub fn parse(text: String) -> Vec<Token> {
                     Some(TokenKind::error(MISMATCHED_PAREN_ERROR))
                 }
             }
-            ' ' => None,
+            ' ' | '\n' => None,
             _ if c.is_digit(10) => {
                 let mut num = String::from(c);
                 let mut bad_char = None;
@@ -161,6 +161,31 @@ pub enum NodeValue {
     Atom(String),
     Quote(String),
     Nil,
+}
+
+impl fmt::Display for NodeValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            NodeValue::Integer(n) => write!(f, "{}", n),
+            NodeValue::Atom(s) => write!(f, "{}", s),
+            NodeValue::Quote(s) => write!(f, "'{}", s),
+            NodeValue::Nil => write!(f, "nil"),
+            NodeValue::List(node) => {
+                write!(f, "(")?;
+                let mut current = Some(Rc::clone(node));
+                let mut first = true;
+                while let Some(rc_node) = current {
+                    if !first {
+                        write!(f, " ")?;
+                    }
+                    write!(f, "{}", rc_node.value)?;
+                    current = rc_node.next.clone();
+                    first = false;
+                }
+                write!(f, ")")
+            }
+        }
+    }
 }
 
 impl NodeValue {
@@ -319,13 +344,6 @@ pub fn extract_args(arg_head: Option<Rc<Node>>) -> Vec<NodeValue> {
     }
 }
 
-pub fn eval_args(arg_head: Option<Rc<Node>>, scope: &mut Scope) -> Vec<NodeValue> {
-    let args = extract_args(arg_head);
-    args.into_iter()
-        .map(|arg| eval(Node::leaf(arg), scope).value)
-        .collect()
-}
-
 pub fn eval_macro(macro_name: &str, args_list: Option<Rc<Node>>, scope: &mut Scope) -> Node {
     let args = extract_args(args_list);
 
@@ -383,48 +401,80 @@ pub fn eval_builtin(func_name: String, args_list: Option<Rc<Node>>, scope: &mut 
 
     // Back to our regularly scheduled programming
 
-    let args = eval_args(args_list, scope);
+    let args = extract_args(args_list);
 
     match func_str {
-        "+" | "*" | "/" => {
-            if let (Some(NodeValue::Integer(v0)), Some(NodeValue::Integer(v1))) =
-                (args.get(0), args.get(1))
-            {
-                let result = match func_str {
-                    "+" => NodeValue::Integer(v0 + v1),
-                    "*" => NodeValue::Integer(v0 * v1),
-                    "/" => NodeValue::Integer(v0 / v1),
-                    _ => unreachable!(),
+        "if" => {
+            if args.len() == 3 {
+                let predicate = eval_value(args[0].clone(), scope);
+
+                let branch = match predicate {
+                    NodeValue::Nil | NodeValue::Integer(0) => &args[2],
+                    _ => &args[1],
                 };
+
+                let result = eval_value(branch.clone(), scope);
+
                 Node::leaf(result)
             } else {
-                panic!("Expected two integer arguments")
+                panic!("Expected three arguments")
             }
         }
-        "-" => {
-            if let Some(NodeValue::Integer(v0)) = args.get(0) {
-                if let Some(NodeValue::Integer(v1)) = args.get(1) {
-                    Node::leaf(NodeValue::Integer(v0 - v1))
+        "+" | "*" | "/" | "<" => {
+            if args.len() == 2 {
+                if let (NodeValue::Integer(v0), NodeValue::Integer(v1)) = (
+                    eval_value(args[0].clone(), scope),
+                    eval_value(args[1].clone(), scope),
+                ) {
+                    let result = match func_str {
+                        "+" => NodeValue::Integer(v0 + v1),
+                        "*" => NodeValue::Integer(v0 * v1),
+                        "/" => NodeValue::Integer(v0 / v1),
+                        "<" => NodeValue::Integer(if v0 < v1 { 1 } else { 0 }),
+                        _ => unreachable!(),
+                    };
+
+                    Node::leaf(result)
                 } else {
-                    Node::leaf(NodeValue::Integer(-v0))
+                    panic!("Expected two integer arguments")
                 }
             } else {
-                panic!("Expected one or two integer arguments")
+                panic!("Expected two arguments")
             }
         }
-        _ => unimplemented!(),
+        "-" => match args.len() {
+            1 => {
+                if let NodeValue::Integer(v0) = eval_value(args[0].clone(), scope) {
+                    Node::leaf(NodeValue::Integer(-v0))
+                } else {
+                    panic!("Expected one integer argument")
+                }
+            }
+            2 => {
+                if let (NodeValue::Integer(v0), NodeValue::Integer(v1)) = (
+                    eval_value(args[0].clone(), scope),
+                    eval_value(args[1].clone(), scope),
+                ) {
+                    Node::leaf(NodeValue::Integer(v0 - v1))
+                } else {
+                    panic!("Expected two integer arguments")
+                }
+            }
+            _ => panic!("Expected one or two arguments"),
+        },
+        _ => panic!("'{}' is not a builtin", func_name),
     }
 }
 
 pub fn eval_fn(func_def: FuncDef, args_list: Option<Rc<Node>>, scope: &mut Scope) -> Node {
     let arg_names = func_def.args;
     let body = func_def.body;
-    let args = eval_args(args_list, scope);
+    let args = extract_args(args_list);
 
     let mut child_scope = scope.make_child();
 
     for (name, value) in arg_names.into_iter().zip(args.into_iter()) {
-        child_scope.set(name, value)
+        child_scope.set(name, eval_value(value, scope))
     }
 
     eval(Node::leaf(body), &mut child_scope)
@@ -752,6 +802,39 @@ mod tests {
         test_eval(
             "(def square (x) ((* x x))) (square 3)",
             vec![Node::nil(), Node::leaf(NodeValue::Integer(9))],
+        );
+    }
+
+    #[test]
+    fn if_else() {
+        test_eval("(if 1 1 2)", vec![Node::leaf(NodeValue::Integer(1))]);
+        test_eval("(if (+ 1 2) 1 2)", vec![Node::leaf(NodeValue::Integer(1))]);
+
+        test_eval("(if 0 1 2)", vec![Node::leaf(NodeValue::Integer(2))]);
+        test_eval("(if () 1 2)", vec![Node::leaf(NodeValue::Integer(2))]);
+    }
+
+    #[test]
+    fn recursion() {
+        test_eval(
+            "
+            (def fib (n) ((if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))))
+            (fib 0)
+            (fib 1)
+            (fib 2)
+            (fib 3)
+            (fib 4)
+            (fib 5)
+            ",
+            vec![
+                Node::nil(),
+                Node::leaf(NodeValue::Integer(0)),
+                Node::leaf(NodeValue::Integer(1)),
+                Node::leaf(NodeValue::Integer(1)),
+                Node::leaf(NodeValue::Integer(2)),
+                Node::leaf(NodeValue::Integer(3)),
+                Node::leaf(NodeValue::Integer(5)),
+            ],
         );
     }
 }
