@@ -286,7 +286,7 @@ pub fn construct(tokens: Vec<Token>) -> Vec<Node> {
 #[derive(Debug, Clone)]
 pub struct FuncDef {
     args: Vec<String>,
-    body: NodeValue,
+    body: Vec<NodeValue>,
 }
 
 #[derive(Debug, Clone)]
@@ -312,7 +312,7 @@ impl Scope {
         self.vars.insert(name, Var::Value(value));
     }
 
-    pub fn def(&mut self, name: String, args: Vec<String>, body: NodeValue) {
+    pub fn def(&mut self, name: String, args: Vec<String>, body: Vec<NodeValue>) {
         self.vars.insert(name, Var::Func(FuncDef { args, body }));
     }
 
@@ -379,7 +379,9 @@ pub fn eval_macro(macro_name: &str, args_list: Option<Rc<Node>>, scope: &mut Sco
                     })
                     .collect();
 
-                scope.def(func_name.clone(), func_arg_names, func_body.value.clone())
+                let func_body_exprs = extract_args(Some(func_body.clone()));
+
+                scope.def(func_name.clone(), func_arg_names, func_body_exprs)
             } else {
                 panic!("Cannot declare function, incorrect argument types")
             }
@@ -492,7 +494,16 @@ pub fn eval_fn(func_def: FuncDef, args_list: Option<Rc<Node>>, scope: &mut Scope
         child_scope.set(name, eval_value(value, scope))
     }
 
-    eval(Node::leaf(body), &mut child_scope)
+    let result: Vec<NodeValue> = body
+        .into_iter()
+        .map(|expr| eval_value(expr, &mut child_scope))
+        .collect();
+
+    if let Some(return_value) = result.last() {
+        eval(Node::leaf(return_value.clone()), &mut child_scope)
+    } else {
+        Node::nil()
+    }
 }
 
 pub fn eval_value(value: NodeValue, scope: &mut Scope) -> NodeValue {
@@ -878,6 +889,39 @@ mod tests {
                 Node::leaf(NodeValue::Integer(3)),
                 Node::leaf(NodeValue::Integer(9)),
                 Node::leaf(NodeValue::Integer(8)),
+            ],
+        )
+    }
+
+    #[test]
+    fn assignment_in_function() {
+        test_eval(
+            "
+            (def sqrt (x) (
+                (def inner_sqrt (x n) (
+                    (let n_squared (* n n))
+                    (if (= n_squared x)
+                        n
+                        (if (> n_squared x)
+                            (- n 1)
+                            (inner_sqrt x (+ n 1))
+                        )
+                    )
+                ))
+                (inner_sqrt x 0)
+            ))
+
+            (sqrt 0)
+            (sqrt 1)
+            (sqrt 4)
+            (sqrt 10)
+            ",
+            vec![
+                Node::nil(),
+                Node::leaf(NodeValue::Integer(0)),
+                Node::leaf(NodeValue::Integer(1)),
+                Node::leaf(NodeValue::Integer(2)),
+                Node::leaf(NodeValue::Integer(3)),
             ],
         )
     }
