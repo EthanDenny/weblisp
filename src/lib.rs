@@ -265,30 +265,42 @@ pub fn eval_arg(arg: Option<NodeValue>) -> Option<NodeValue> {
     }
 }
 
-pub fn eval_fn(func_name: String, args: Option<Rc<Node>>) -> Node {
+pub fn extract_args(arg_head: Option<Rc<Node>>) -> Vec<NodeValue> {
+    if let Some(args) = arg_head {
+        let args_ref = args.as_ref();
+
+        let head_value = args_ref.value.clone();
+        let head_eval = match head_value {
+            NodeValue::List(ptr) => eval(ptr.as_ref().clone()).value,
+            _ => head_value,
+        };
+        let head_vec = vec![head_eval];
+
+        let tail_vec = extract_args(args_ref.next.clone());
+
+        if tail_vec.len() > 0 {
+            [head_vec, tail_vec].concat()
+        } else {
+            head_vec
+        }
+    } else {
+        vec![]
+    }
+}
+
+pub fn eval_fn(func_name: String, args_list: Option<Rc<Node>>) -> Node {
     let func_str = func_name.as_str();
+    let args = extract_args(args_list);
 
     match func_str {
-        "+" | "-" | "*" | "/" => {
-            let mut arg0 = None;
-            let mut arg1 = None;
+        "+" | "*" | "/" => {
+            assert_eq!(args.len(), 2);
 
-            if let Some(args) = args {
-                let args = args.as_ref();
-                arg0 = Some(args.value.clone());
-                if let Some(args) = &args.next {
-                    let args = args.as_ref();
-                    arg1 = Some(args.value.clone());
-                }
-            }
-
-            let eval0 = eval_arg(arg0);
-            let eval1 = eval_arg(arg1);
-
-            if let (Some(NodeValue::Integer(v0)), Some(NodeValue::Integer(v1))) = (eval0, eval1) {
+            if let (Some(NodeValue::Integer(v0)), Some(NodeValue::Integer(v1))) =
+                (args.get(0), args.get(1))
+            {
                 let result = match func_str {
                     "+" => NodeValue::Integer(v0 + v1),
-                    "-" => NodeValue::Integer(v0 - v1),
                     "*" => NodeValue::Integer(v0 * v1),
                     "/" => NodeValue::Integer(v0 / v1),
                     _ => unreachable!(),
@@ -296,6 +308,17 @@ pub fn eval_fn(func_name: String, args: Option<Rc<Node>>) -> Node {
                 Node::leaf(result)
             } else {
                 panic!("Expected two integer arguments")
+            }
+        }
+        "-" => {
+            if let Some(NodeValue::Integer(v0)) = args.get(0) {
+                if let Some(NodeValue::Integer(v1)) = args.get(1) {
+                    Node::leaf(NodeValue::Integer(v0 - v1))
+                } else {
+                    Node::leaf(NodeValue::Integer(-v0))
+                }
+            } else {
+                panic!("Expected one or two integer arguments")
             }
         }
         _ => unimplemented!(),
@@ -570,5 +593,12 @@ mod tests {
         test_eval("(- (* 2 2) 2)", vec![Node::leaf(NodeValue::Integer(2))]);
         test_eval("(* 2 (/ 2 2))", vec![Node::leaf(NodeValue::Integer(2))]);
         test_eval("(/ 2 (* 2 2))", vec![Node::leaf(NodeValue::Integer(0))]);
+    }
+
+    #[test]
+    fn negation() {
+        test_eval("(- 2)", vec![Node::leaf(NodeValue::Integer(-2))]);
+        test_eval("(- 0)", vec![Node::leaf(NodeValue::Integer(0))]);
+        test_eval("(+ 3 (- 2))", vec![Node::leaf(NodeValue::Integer(1))]);
     }
 }
