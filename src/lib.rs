@@ -258,9 +258,22 @@ pub fn construct(tokens: Vec<Token>) -> Vec<Node> {
 
 // Eval types functions
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+pub struct FuncDef {
+    args: Vec<String>,
+    body: NodeValue,
+}
+
+#[derive(Debug, Clone)]
+pub enum Var {
+    Value(NodeValue),
+    Func(FuncDef),
+    Empty,
+}
+
+#[derive(Debug, Clone)]
 pub struct Scope {
-    vars: HashMap<String, NodeValue>,
+    vars: HashMap<String, Var>,
 }
 
 impl Scope {
@@ -271,11 +284,19 @@ impl Scope {
     }
 
     pub fn set(&mut self, name: String, value: NodeValue) {
-        self.vars.insert(name, value);
+        self.vars.insert(name, Var::Value(value));
     }
 
-    pub fn get(&mut self, name: String) -> Option<NodeValue> {
-        self.vars.get(&name).cloned()
+    pub fn def(&mut self, name: String, args: Vec<String>, body: NodeValue) {
+        self.vars.insert(name, Var::Func(FuncDef { args, body }));
+    }
+
+    pub fn get(&mut self, name: String) -> Var {
+        self.vars.get(&name).cloned().unwrap_or(Var::Empty)
+    }
+
+    pub fn make_child(&mut self) -> Scope {
+        self.clone()
     }
 }
 
@@ -329,7 +350,18 @@ pub fn eval_macro(macro_name: &str, args_list: Option<Rc<Node>>, scope: &mut Sco
                 Some(NodeValue::List(func_body)),
             ) = (args.get(0), args.get(1), args.get(2))
             {
-                println!("{:?}\n{:?}\n{:?}", func_name, func_args, func_body)
+                let func_arg_names = extract_args(Some(func_args.clone()))
+                    .into_iter()
+                    .map(|arg| {
+                        if let NodeValue::Atom(arg_name) = arg {
+                            arg_name
+                        } else {
+                            panic!("Expected an atom for func arg")
+                        }
+                    })
+                    .collect();
+
+                scope.def(func_name.clone(), func_arg_names, func_body.value.clone())
             } else {
                 panic!("Cannot declare function, incorrect argument types")
             }
@@ -340,7 +372,7 @@ pub fn eval_macro(macro_name: &str, args_list: Option<Rc<Node>>, scope: &mut Sco
     }
 }
 
-pub fn eval_fn(func_name: String, args_list: Option<Rc<Node>>, scope: &mut Scope) -> Node {
+pub fn eval_builtin(func_name: String, args_list: Option<Rc<Node>>, scope: &mut Scope) -> Node {
     let func_str = func_name.as_str();
 
     // Escape to special-case macro land if necessary
@@ -384,19 +416,31 @@ pub fn eval_fn(func_name: String, args_list: Option<Rc<Node>>, scope: &mut Scope
     }
 }
 
+pub fn eval_fn(func_def: FuncDef, args_list: Option<Rc<Node>>, scope: &mut Scope) -> Node {
+    let arg_names = func_def.args;
+    let body = func_def.body;
+    let args = eval_args(args_list, scope);
+
+    let mut child_scope = scope.make_child();
+
+    for (name, value) in arg_names.into_iter().zip(args.into_iter()) {
+        child_scope.set(name, value)
+    }
+
+    eval(Node::leaf(body), &mut child_scope)
+}
+
 pub fn eval_value(value: NodeValue, scope: &mut Scope) -> NodeValue {
     eval(Node::leaf(value), scope).value
 }
 
 pub fn eval(mut expr: Node, scope: &mut Scope) -> Node {
     match &expr.value {
-        NodeValue::Atom(atom) => {
-            if let Some(value) = scope.get(atom.clone()) {
-                Node::leaf(value)
-            } else {
-                eval_fn(atom.clone(), expr.next.clone(), scope)
-            }
-        }
+        NodeValue::Atom(atom) => match scope.get(atom.clone()) {
+            Var::Value(value) => Node::leaf(value),
+            Var::Func(func_def) => eval_fn(func_def, expr.next.clone(), scope),
+            Var::Empty => eval_builtin(atom.clone(), expr.next.clone(), scope),
+        },
         NodeValue::List(ptr) => eval(ptr.as_ref().clone(), scope),
         NodeValue::Quote(inner) => {
             expr.value = NodeValue::Atom(inner.clone());
@@ -700,6 +744,14 @@ mod tests {
                 Node::leaf(NodeValue::Integer(2)),
                 Node::leaf(NodeValue::Integer(3)),
             ],
+        );
+    }
+
+    #[test]
+    fn func_def() {
+        test_eval(
+            "(def square (x) ((* x x))) (square 3)",
+            vec![Node::nil(), Node::leaf(NodeValue::Integer(9))],
         );
     }
 }
