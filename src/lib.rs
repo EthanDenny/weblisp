@@ -420,7 +420,7 @@ pub fn eval_builtin(func_name: String, args_list: Option<Rc<Node>>, scope: &mut 
                 panic!("Expected three arguments")
             }
         }
-        "+" | "*" | "/" | "<" => {
+        "+" | "*" | "/" | "<" | ">" | "<=" | ">=" => {
             if args.len() == 2 {
                 if let (NodeValue::Integer(v0), NodeValue::Integer(v1)) = (
                     eval_value(args[0].clone(), scope),
@@ -431,6 +431,9 @@ pub fn eval_builtin(func_name: String, args_list: Option<Rc<Node>>, scope: &mut 
                         "*" => NodeValue::Integer(v0 * v1),
                         "/" => NodeValue::Integer(v0 / v1),
                         "<" => NodeValue::Integer(if v0 < v1 { 1 } else { 0 }),
+                        ">" => NodeValue::Integer(if v0 > v1 { 1 } else { 0 }),
+                        "<=" => NodeValue::Integer(if v0 <= v1 { 1 } else { 0 }),
+                        ">=" => NodeValue::Integer(if v0 >= v1 { 1 } else { 0 }),
                         _ => unreachable!(),
                     };
 
@@ -438,6 +441,18 @@ pub fn eval_builtin(func_name: String, args_list: Option<Rc<Node>>, scope: &mut 
                 } else {
                     panic!("Expected two integer arguments")
                 }
+            } else {
+                panic!("Expected two arguments")
+            }
+        }
+        "=" => {
+            if args.len() == 2 {
+                let (v0, v1) = (
+                    eval_value(args[0].clone(), scope),
+                    eval_value(args[1].clone(), scope),
+                );
+
+                Node::leaf(NodeValue::Integer(if v0 == v1 { 1 } else { 0 }))
             } else {
                 panic!("Expected two arguments")
             }
@@ -818,7 +833,13 @@ mod tests {
     fn recursion() {
         test_eval(
             "
-            (def fib (n) ((if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))))
+            (def fib (n) (
+                (if (< n 2)
+                    n
+                    (+ (fib (- n 1)) (fib (- n 2)))
+                )
+            ))
+
             (fib 0)
             (fib 1)
             (fib 2)
@@ -836,5 +857,28 @@ mod tests {
                 Node::leaf(NodeValue::Integer(5)),
             ],
         );
+
+        test_eval(
+            "
+            (def pow (x y) (
+                (if (= y 0)
+                    1
+                    (* x (pow x (- y 1)))
+                )
+            ))
+
+            (pow 2 0)
+            (pow 3 1)
+            (pow 3 2)
+            (pow 2 3)
+            ",
+            vec![
+                Node::nil(),
+                Node::leaf(NodeValue::Integer(1)),
+                Node::leaf(NodeValue::Integer(3)),
+                Node::leaf(NodeValue::Integer(9)),
+                Node::leaf(NodeValue::Integer(8)),
+            ],
+        )
     }
 }
