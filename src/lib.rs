@@ -258,6 +258,13 @@ pub fn construct(tokens: Vec<Token>) -> Vec<Node> {
 
 // Eval functions
 
+pub fn eval_arg(arg: Option<NodeValue>) -> Option<NodeValue> {
+    match arg {
+        Some(NodeValue::List(ptr)) => Some(eval(ptr.as_ref().clone()).value),
+        _ => arg,
+    }
+}
+
 pub fn eval_fn(func_name: String, args: Option<Rc<Node>>) -> Node {
     let func_str = func_name.as_str();
 
@@ -275,7 +282,10 @@ pub fn eval_fn(func_name: String, args: Option<Rc<Node>>) -> Node {
                 }
             }
 
-            if let (Some(NodeValue::Integer(v0)), Some(NodeValue::Integer(v1))) = (arg0, arg1) {
+            let eval0 = eval_arg(arg0);
+            let eval1 = eval_arg(arg1);
+
+            if let (Some(NodeValue::Integer(v0)), Some(NodeValue::Integer(v1))) = (eval0, eval1) {
                 let result = match func_str {
                     "+" => NodeValue::Integer(v0 + v1),
                     "-" => NodeValue::Integer(v0 - v1),
@@ -552,5 +562,13 @@ mod tests {
         test_eval("(- 2 2)", vec![Node::leaf(NodeValue::Integer(0))]);
         test_eval("(* 2 2)", vec![Node::leaf(NodeValue::Integer(4))]);
         test_eval("(/ 2 2)", vec![Node::leaf(NodeValue::Integer(1))]);
+    }
+
+    #[test]
+    fn chained_arithmetic() {
+        test_eval("(+ 2 (- 2 2))", vec![Node::leaf(NodeValue::Integer(2))]);
+        test_eval("(- (* 2 2) 2)", vec![Node::leaf(NodeValue::Integer(2))]);
+        test_eval("(* 2 (/ 2 2))", vec![Node::leaf(NodeValue::Integer(2))]);
+        test_eval("(/ 2 (* 2 2))", vec![Node::leaf(NodeValue::Integer(0))]);
     }
 }
