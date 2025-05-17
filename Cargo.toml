@@ -7,8 +7,4 @@ edition = "2021"
 name = "mylisplib"
 path = "src/lib.rs"
 
-[[bin]]
-name = "mylispbin"
-path = "src/main.rs"
-
 [dependencies]

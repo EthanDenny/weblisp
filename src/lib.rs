@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 // Error strings
 
 const MISMATCHED_PAREN_ERROR: &str = "Closing parenthesis without opening parenthesis";
@@ -153,112 +155,152 @@ pub fn parse_str(text: &str) -> Vec<Token> {
 // Tree types and functions
 
 #[derive(PartialEq, Debug, Clone)]
-pub enum Element {
-    List(Vec<Element>),
+pub enum NodeValue {
+    List(Rc<Node>),
     Integer(i64),
     Atom(String),
     Quote(String),
+    Nil,
 }
 
-impl Element {
-    pub fn atom(inner: &str) -> Element {
-        Element::Atom(inner.to_string())
+impl NodeValue {
+    pub fn atom(value: &str) -> NodeValue {
+        NodeValue::Atom(value.to_string())
     }
 
-    pub fn quote(inner: &str) -> Element {
-        Element::Quote(inner.to_string())
+    pub fn quote(value: &str) -> NodeValue {
+        NodeValue::Quote(value.to_string())
+    }
+
+    pub fn list(elems: &[NodeValue]) -> NodeValue {
+        let node = Node::list(elems);
+
+        match node.value {
+            NodeValue::Nil => NodeValue::Nil,
+            _ => NodeValue::List(Rc::new(node)),
+        }
     }
 }
 
-pub fn construct_list(tokens: &mut std::vec::IntoIter<Token>) -> Element {
-    let mut children = Vec::new();
+#[derive(PartialEq, Debug, Clone)]
+pub struct Node {
+    value: NodeValue,
+    next: Option<Rc<Node>>,
+}
 
-    while let Some(token) = tokens.next() {
-        match token.kind {
-            TokenKind::Atom(inner) => children.push(Element::Atom(inner)),
-            TokenKind::Quote(inner) => children.push(Element::Quote(inner)),
-            TokenKind::Integer(v) => children.push(Element::Integer(v)),
-            TokenKind::LeftParen => children.push(construct_list(tokens)),
+impl Node {
+    fn new(value: NodeValue, next: Option<Rc<Node>>) -> Node {
+        Node { value, next }
+    }
+
+    fn leaf(value: NodeValue) -> Node {
+        Node::new(value, None)
+    }
+
+    fn nil() -> Node {
+        Node::leaf(NodeValue::Nil)
+    }
+
+    fn list(elems: &[NodeValue]) -> Node {
+        if elems.len() > 1 {
+            Node::new(elems[0].clone(), Some(Rc::new(Node::list(&elems[1..]))))
+        } else if elems.len() == 1 {
+            Node::new(elems[0].clone(), None)
+        } else {
+            Node::nil()
+        }
+    }
+}
+
+pub fn construct_value(kind: TokenKind) -> NodeValue {
+    match kind {
+        TokenKind::Atom(inner) => NodeValue::Atom(inner),
+        TokenKind::Quote(inner) => NodeValue::Quote(inner),
+        TokenKind::Integer(inner) => NodeValue::Integer(inner),
+        _ => unreachable!(),
+    }
+}
+
+pub fn construct_list(tokens: &mut std::vec::IntoIter<Token>) -> Vec<NodeValue> {
+    let mut nodes = Vec::new();
+
+    while let Some(t) = tokens.next() {
+        let node = match t.kind {
+            TokenKind::LeftParen => NodeValue::list(&construct_list(tokens)),
             TokenKind::RightParen => break,
-            _ => panic!("{token:?} cannot be constructed on"),
-        }
+            TokenKind::Error(msg) => panic!("{}", msg),
+            kind => construct_value(kind),
+        };
+
+        nodes.push(node);
     }
 
-    Element::List(children)
+    nodes
 }
 
-pub fn construct(tokens: Vec<Token>) -> Element {
-    construct_list(&mut tokens.into_iter())
+pub fn construct(tokens: Vec<Token>) -> Vec<Node> {
+    let mut tok_iter = tokens.into_iter();
+    let mut nodes = Vec::new();
+
+    while let Some(t) = tok_iter.next() {
+        let node = match t.kind {
+            TokenKind::LeftParen => Node::list(&construct_list(&mut tok_iter)),
+            TokenKind::RightParen => unreachable!(),
+            TokenKind::Error(msg) => panic!("{}", msg),
+            kind => Node::new(construct_value(kind), None),
+        };
+
+        nodes.push(node);
+    }
+
+    nodes
 }
 
-// Eval
+// Eval functions
 
-pub fn eval_function(f: Element, args: Vec<Element>) -> Element {
-    match f {
-        Element::Atom(func) => match func.as_str() {
-            "cons" => Element::List(args.into_iter().map(|c| eval(c)).collect()),
-            "quote" => {
-                if args.len() == 1 {
-                    let first = &args[0];
-                    match first {
-                        Element::Quote(inner) | Element::Atom(inner) => {
-                            Element::Quote(inner.clone())
-                        }
-                        _ => panic!("Cannot quote {first:?}"),
-                    }
-                } else {
-                    Element::List(
-                        args.into_iter()
-                            .map(|arg| match arg {
-                                Element::Quote(inner) | Element::Atom(inner) => {
-                                    Element::Quote(inner)
-                                }
-                                _ => panic!("Cannot quote {arg:?}"),
-                            })
-                            .collect(),
-                    )
+pub fn eval_fn(func_name: String, args: Option<Rc<Node>>) -> Node {
+    let func_str = func_name.as_str();
+
+    match func_str {
+        "+" | "-" | "*" | "/" => {
+            let mut arg0 = None;
+            let mut arg1 = None;
+
+            if let Some(args) = args {
+                let args = args.as_ref();
+                arg0 = Some(args.value.clone());
+                if let Some(args) = &args.next {
+                    let args = args.as_ref();
+                    arg1 = Some(args.value.clone());
                 }
             }
-            _ => todo!(), // Add lookup when variables are added
-        },
-        _ => panic!("Cannot evaluate non-atom function: \"{f:?}\""),
-    }
-}
 
-pub fn eval(e: Element) -> Element {
-    match e {
-        Element::List(children) => {
-            let mut children_iter = children.into_iter().peekable();
-            let first = children_iter.next();
-
-            if let Some(first) = first {
-                match first {
-                    Element::Atom(_) => eval_function(first, children_iter.collect()),
-                    Element::List(_) => {
-                        let first_evaluated = eval(first);
-
-                        if let Element::Atom(_) = first_evaluated {
-                            eval_function(first_evaluated, children_iter.collect())
-                        } else {
-                            Element::List(
-                                [
-                                    vec![first_evaluated],
-                                    children_iter.map(|c| eval(c)).collect(),
-                                ]
-                                .concat(),
-                            )
-                        }
-                    }
-                    _ => Element::List(
-                        [vec![eval(first)], children_iter.map(|c| eval(c)).collect()].concat(),
-                    ),
-                }
+            if let (Some(NodeValue::Integer(v0)), Some(NodeValue::Integer(v1))) = (arg0, arg1) {
+                let result = match func_str {
+                    "+" => NodeValue::Integer(v0 + v1),
+                    "-" => NodeValue::Integer(v0 - v1),
+                    "*" => NodeValue::Integer(v0 * v1),
+                    "/" => NodeValue::Integer(v0 / v1),
+                    _ => unreachable!(),
+                };
+                Node::leaf(result)
             } else {
-                Element::List(vec![])
+                panic!("Expected two integer arguments")
             }
         }
-        Element::Quote(inner) => Element::Atom(inner),
-        _ => e,
+        _ => unimplemented!(),
+    }
+}
+
+pub fn eval(mut expr: Node) -> Node {
+    match &expr.value {
+        NodeValue::Atom(func_name) => eval_fn(func_name.clone(), expr.next.clone()),
+        NodeValue::List(ptr) => eval(ptr.as_ref().clone()),
+        NodeValue::Quote(inner) => {
+            expr.value = NodeValue::Atom(inner.clone());
+            expr
+        }
+        _ => expr,
     }
 }
 
@@ -390,126 +432,125 @@ mod tests {
 
     // Construction tests
 
-    fn test_construction(text: &str, target: Element) {
+    fn test_construction(text: &str, target: Vec<Node>) {
         let tokens = parse_str(text);
-        let tree = construct(tokens);
-
-        // Wrap in a list to mimic the global list produced during construction
-        let wrapped_target = Element::List(vec![target]);
-
-        assert_eq!(tree, wrapped_target)
+        let block = construct(tokens);
+        assert_eq!(block, target)
     }
 
     #[test]
     fn construction() {
-        test_construction("()", Element::List(vec![]));
+        test_construction("", vec![]);
 
-        test_construction("(1)", Element::List(vec![Element::Integer(1)]));
+        test_construction(
+            "1 2 3",
+            vec![
+                Node::new(NodeValue::Integer(1), None),
+                Node::new(NodeValue::Integer(2), None),
+                Node::new(NodeValue::Integer(3), None),
+            ],
+        );
+
+        test_construction("()", vec![Node::nil()]);
+
+        test_construction("(1)", vec![Node::list(&[NodeValue::Integer(1)])]);
 
         test_construction(
             "(1 2 3)",
-            Element::List(vec![
-                Element::Integer(1),
-                Element::Integer(2),
-                Element::Integer(3),
-            ]),
+            vec![Node::list(&[
+                NodeValue::Integer(1),
+                NodeValue::Integer(2),
+                NodeValue::Integer(3),
+            ])],
+        );
+
+        test_construction(
+            "(1) (2) (3)",
+            vec![
+                Node::list(&[NodeValue::Integer(1)]),
+                Node::list(&[NodeValue::Integer(2)]),
+                Node::list(&[NodeValue::Integer(3)]),
+            ],
         );
 
         test_construction(
             "(1 2 (3 4 5))",
-            Element::List(vec![
-                Element::Integer(1),
-                Element::Integer(2),
-                Element::List(vec![
-                    Element::Integer(3),
-                    Element::Integer(4),
-                    Element::Integer(5),
+            vec![Node::list(&[
+                NodeValue::Integer(1),
+                NodeValue::Integer(2),
+                NodeValue::list(&[
+                    NodeValue::Integer(3),
+                    NodeValue::Integer(4),
+                    NodeValue::Integer(5),
                 ]),
-            ]),
-        );
-
-        test_construction(
-            "(+ (+ 1 2) (+ 3 4))",
-            Element::List(vec![
-                Element::atom("+"),
-                Element::List(vec![
-                    Element::atom("+"),
-                    Element::Integer(1),
-                    Element::Integer(2),
-                ]),
-                Element::List(vec![
-                    Element::atom("+"),
-                    Element::Integer(3),
-                    Element::Integer(4),
-                ]),
-            ]),
-        );
-
-        test_construction(
-            "((head ('print '+ '-)) 1 2 3)",
-            Element::List(vec![
-                Element::List(vec![
-                    Element::atom("head"),
-                    Element::List(vec![
-                        Element::quote("print"),
-                        Element::quote("+"),
-                        Element::quote("-"),
-                    ]),
-                ]),
-                Element::Integer(1),
-                Element::Integer(2),
-                Element::Integer(3),
-            ]),
+            ])],
         );
     }
 
     // Eval tests
 
-    fn test_eval(text: &str, target: Element) {
+    fn test_eval(text: &str, target: Vec<Node>) {
         let tokens = parse_str(text);
-        let tree = construct(tokens);
-        let result = eval(tree);
+        let block = construct(tokens);
+        let result: Vec<Node> = block.into_iter().map(|expr| eval(expr)).collect();
 
         assert_eq!(result, target)
     }
 
     #[test]
     fn basic_evals() {
-        test_eval("", Element::List(vec![]));
+        test_eval("", vec![]);
 
         test_eval(
-            "1 (2 3)",
-            Element::List(vec![
-                Element::Integer(1),
-                Element::List(vec![Element::Integer(2), Element::Integer(3)]),
-            ]),
+            "1 2 3",
+            vec![
+                Node::leaf(NodeValue::Integer(1)),
+                Node::leaf(NodeValue::Integer(2)),
+                Node::leaf(NodeValue::Integer(3)),
+            ],
         );
-    }
 
-    #[test]
-    fn cons() {
+        test_eval("()", vec![Node::nil()]);
+
+        test_eval("(1)", vec![Node::list(&[NodeValue::Integer(1)])]);
+
         test_eval(
-            "(cons 3) (cons (3 2) ('print 1))",
-            Element::List(vec![
-                Element::List(vec![Element::Integer(3)]),
-                Element::List(vec![
-                    Element::List(vec![Element::Integer(3), Element::Integer(2)]),
-                    Element::List(vec![Element::atom("print"), Element::Integer(1)]),
+            "(1 2 3)",
+            vec![Node::list(&[
+                NodeValue::Integer(1),
+                NodeValue::Integer(2),
+                NodeValue::Integer(3),
+            ])],
+        );
+
+        test_eval(
+            "(1) (2) (3)",
+            vec![
+                Node::list(&[NodeValue::Integer(1)]),
+                Node::list(&[NodeValue::Integer(2)]),
+                Node::list(&[NodeValue::Integer(3)]),
+            ],
+        );
+
+        test_eval(
+            "(1 2 (3 4 5))",
+            vec![Node::list(&[
+                NodeValue::Integer(1),
+                NodeValue::Integer(2),
+                NodeValue::list(&[
+                    NodeValue::Integer(3),
+                    NodeValue::Integer(4),
+                    NodeValue::Integer(5),
                 ]),
-            ]),
+            ])],
         );
     }
 
     #[test]
-    fn quote() {
-        test_eval("(quote a)", Element::List(vec![Element::quote("a")]));
-        test_eval(
-            "(quote a 'b c)",
-            Element::List(vec![Element::List(vec![
-                Element::quote("a"),
-                Element::quote("b"),
-                Element::quote("c"),
-            ])]),
-        );
+    fn simple_arithmetic() {
+        test_eval("(+ 2 2)", vec![Node::leaf(NodeValue::Integer(4))]);
+        test_eval("(- 2 2)", vec![Node::leaf(NodeValue::Integer(0))]);
+        test_eval("(* 2 2)", vec![Node::leaf(NodeValue::Integer(4))]);
+        test_eval("(/ 2 2)", vec![Node::leaf(NodeValue::Integer(1))]);
     }
 }
