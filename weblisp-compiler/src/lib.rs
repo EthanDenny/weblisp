@@ -15,7 +15,7 @@ pub enum TokenKind {
     RightParen,
     Atom(String),
     Quote(String),
-    Integer(i64),
+    Number(f64),
     Error(String),
 }
 
@@ -69,11 +69,14 @@ pub fn parse(text: String) -> Vec<Token> {
                 let mut bad_char = None;
 
                 while let Some(&p) = chars.peek() {
+                    let mut push_p = || {
+                        num.push(p);
+                        chars.next();
+                    };
+
                     match p {
-                        _ if p.is_digit(10) => {
-                            num.push(p);
-                            chars.next();
-                        }
+                        _ if p.is_digit(10) => push_p(),
+                        '.' => push_p(),
                         '(' | ')' => break,
                         _ if p.is_whitespace() => break,
                         _ => {
@@ -85,17 +88,17 @@ pub fn parse(text: String) -> Vec<Token> {
 
                 if let Some(c) = bad_char {
                     Some(TokenKind::Error(format!(
-                        "'{c}' cannot be part of an integer",
+                        "'{c}' cannot be part of an number",
                     )))
                 } else {
-                    let parsed = num.parse::<i64>();
+                    let parsed = num.parse::<f64>();
 
                     match parsed {
-                        Ok(v) => Some(TokenKind::Integer(v)),
+                        Ok(v) => Some(TokenKind::Number(v)),
 
                         // TODO: Figure out a way to test this (shoould theoretically never trigger)
                         Err(_) => Some(TokenKind::Error(format!(
-                            "Tried to parse integer \"{}\", but something went wrong",
+                            "Tried to parse number \"{}\", but something went wrong",
                             num,
                         ))),
                     }
@@ -158,7 +161,7 @@ pub fn parse_str(text: &str) -> Vec<Token> {
 #[derive(PartialEq, Debug, Clone)]
 pub enum NodeValue {
     List(Rc<Node>),
-    Integer(i64),
+    Number(f64),
     Atom(String),
     Quote(String),
     Nil,
@@ -167,7 +170,7 @@ pub enum NodeValue {
 impl fmt::Display for NodeValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            NodeValue::Integer(n) => write!(f, "{}", n),
+            NodeValue::Number(n) => write!(f, "{}", n),
             NodeValue::Atom(s) => write!(f, "{}", s),
             NodeValue::Quote(s) => write!(f, "'{}", s),
             NodeValue::Nil => write!(f, "nil"),
@@ -242,7 +245,7 @@ pub fn construct_value(kind: TokenKind) -> NodeValue {
     match kind {
         TokenKind::Atom(inner) => NodeValue::Atom(inner),
         TokenKind::Quote(inner) => NodeValue::Quote(inner),
-        TokenKind::Integer(inner) => NodeValue::Integer(inner),
+        TokenKind::Number(inner) => NodeValue::Number(inner),
         _ => unreachable!(),
     }
 }
@@ -412,7 +415,7 @@ pub fn eval_builtin(func_name: String, args_list: Option<Rc<Node>>, scope: &mut 
                 let predicate = eval_value(args[0].clone(), scope);
 
                 let branch = match predicate {
-                    NodeValue::Nil | NodeValue::Integer(0) => &args[2],
+                    NodeValue::Nil | NodeValue::Number(0.0) => &args[2],
                     _ => &args[1],
                 };
 
@@ -425,24 +428,24 @@ pub fn eval_builtin(func_name: String, args_list: Option<Rc<Node>>, scope: &mut 
         }
         "+" | "*" | "/" | "<" | ">" | "<=" | ">=" => {
             if args.len() == 2 {
-                if let (NodeValue::Integer(v0), NodeValue::Integer(v1)) = (
+                if let (NodeValue::Number(v0), NodeValue::Number(v1)) = (
                     eval_value(args[0].clone(), scope),
                     eval_value(args[1].clone(), scope),
                 ) {
                     let result = match func_str {
-                        "+" => NodeValue::Integer(v0 + v1),
-                        "*" => NodeValue::Integer(v0 * v1),
-                        "/" => NodeValue::Integer(v0 / v1),
-                        "<" => NodeValue::Integer(if v0 < v1 { 1 } else { 0 }),
-                        ">" => NodeValue::Integer(if v0 > v1 { 1 } else { 0 }),
-                        "<=" => NodeValue::Integer(if v0 <= v1 { 1 } else { 0 }),
-                        ">=" => NodeValue::Integer(if v0 >= v1 { 1 } else { 0 }),
+                        "+" => NodeValue::Number(v0 + v1),
+                        "*" => NodeValue::Number(v0 * v1),
+                        "/" => NodeValue::Number(v0 / v1),
+                        "<" => NodeValue::Number(if v0 < v1 { 1.0 } else { 0.0 }),
+                        ">" => NodeValue::Number(if v0 > v1 { 1.0 } else { 0.0 }),
+                        "<=" => NodeValue::Number(if v0 <= v1 { 1.0 } else { 0.0 }),
+                        ">=" => NodeValue::Number(if v0 >= v1 { 1.0 } else { 0.0 }),
                         _ => unreachable!(),
                     };
 
                     Node::leaf(result)
                 } else {
-                    panic!("Expected two integer arguments")
+                    panic!("Expected two number arguments")
                 }
             } else {
                 panic!("Expected two arguments")
@@ -455,27 +458,27 @@ pub fn eval_builtin(func_name: String, args_list: Option<Rc<Node>>, scope: &mut 
                     eval_value(args[1].clone(), scope),
                 );
 
-                Node::leaf(NodeValue::Integer(if v0 == v1 { 1 } else { 0 }))
+                Node::leaf(NodeValue::Number(if v0 == v1 { 1.0 } else { 0.0 }))
             } else {
                 panic!("Expected two arguments")
             }
         }
         "-" => match args.len() {
             1 => {
-                if let NodeValue::Integer(v0) = eval_value(args[0].clone(), scope) {
-                    Node::leaf(NodeValue::Integer(-v0))
+                if let NodeValue::Number(v0) = eval_value(args[0].clone(), scope) {
+                    Node::leaf(NodeValue::Number(-v0))
                 } else {
-                    panic!("Expected one integer argument")
+                    panic!("Expected one number argument")
                 }
             }
             2 => {
-                if let (NodeValue::Integer(v0), NodeValue::Integer(v1)) = (
+                if let (NodeValue::Number(v0), NodeValue::Number(v1)) = (
                     eval_value(args[0].clone(), scope),
                     eval_value(args[1].clone(), scope),
                 ) {
-                    Node::leaf(NodeValue::Integer(v0 - v1))
+                    Node::leaf(NodeValue::Number(v0 - v1))
                 } else {
-                    panic!("Expected two integer arguments")
+                    panic!("Expected two number arguments")
                 }
             }
             _ => panic!("Expected one or two arguments"),
@@ -579,24 +582,24 @@ mod tests {
 
     #[test]
     fn numbers() {
-        test_parsing("1", vec![TokenKind::Integer(1)]);
+        test_parsing("1", vec![TokenKind::Number(1.0)]);
 
-        test_parsing("1 2", vec![TokenKind::Integer(1), TokenKind::Integer(2)]);
+        test_parsing("1 2", vec![TokenKind::Number(1.0), TokenKind::Number(2.0)]);
 
-        test_parsing("12345", vec![TokenKind::Integer(12345)]);
+        test_parsing("12345", vec![TokenKind::Number(12345.0)]);
 
         test_parsing(
             "12y45",
-            vec![TokenKind::error("'y' cannot be part of an integer")],
+            vec![TokenKind::error("'y' cannot be part of an number")],
         );
 
         test_parsing(
             "(1 2 3)",
             vec![
                 TokenKind::LeftParen,
-                TokenKind::Integer(1),
-                TokenKind::Integer(2),
-                TokenKind::Integer(3),
+                TokenKind::Number(1.0),
+                TokenKind::Number(2.0),
+                TokenKind::Number(3.0),
                 TokenKind::RightParen,
             ],
         );
@@ -605,12 +608,12 @@ mod tests {
             "(1 2 (3 4 5))",
             vec![
                 TokenKind::LeftParen,
-                TokenKind::Integer(1),
-                TokenKind::Integer(2),
+                TokenKind::Number(1.0),
+                TokenKind::Number(2.0),
                 TokenKind::LeftParen,
-                TokenKind::Integer(3),
-                TokenKind::Integer(4),
-                TokenKind::Integer(5),
+                TokenKind::Number(3.0),
+                TokenKind::Number(4.0),
+                TokenKind::Number(5.0),
                 TokenKind::RightParen,
                 TokenKind::RightParen,
             ],
@@ -676,43 +679,43 @@ mod tests {
         test_construction(
             "1 2 3",
             vec![
-                Node::new(NodeValue::Integer(1), None),
-                Node::new(NodeValue::Integer(2), None),
-                Node::new(NodeValue::Integer(3), None),
+                Node::new(NodeValue::Number(1.0), None),
+                Node::new(NodeValue::Number(2.0), None),
+                Node::new(NodeValue::Number(3.0), None),
             ],
         );
 
         test_construction("()", vec![Node::nil()]);
 
-        test_construction("(1)", vec![Node::list(&[NodeValue::Integer(1)])]);
+        test_construction("(1)", vec![Node::list(&[NodeValue::Number(1.0)])]);
 
         test_construction(
-            "(1 2 3)",
+            "(0.1 2.1 3.)",
             vec![Node::list(&[
-                NodeValue::Integer(1),
-                NodeValue::Integer(2),
-                NodeValue::Integer(3),
+                NodeValue::Number(0.1),
+                NodeValue::Number(2.1),
+                NodeValue::Number(3.0),
             ])],
         );
 
         test_construction(
             "(1) (2) (3)",
             vec![
-                Node::list(&[NodeValue::Integer(1)]),
-                Node::list(&[NodeValue::Integer(2)]),
-                Node::list(&[NodeValue::Integer(3)]),
+                Node::list(&[NodeValue::Number(1.0)]),
+                Node::list(&[NodeValue::Number(2.0)]),
+                Node::list(&[NodeValue::Number(3.0)]),
             ],
         );
 
         test_construction(
             "(1 2 (3 4 5))",
             vec![Node::list(&[
-                NodeValue::Integer(1),
-                NodeValue::Integer(2),
+                NodeValue::Number(1.0),
+                NodeValue::Number(2.0),
                 NodeValue::list(&[
-                    NodeValue::Integer(3),
-                    NodeValue::Integer(4),
-                    NodeValue::Integer(5),
+                    NodeValue::Number(3.0),
+                    NodeValue::Number(4.0),
+                    NodeValue::Number(5.0),
                 ]),
             ])],
         );
@@ -740,43 +743,43 @@ mod tests {
         test_eval(
             "1 2 3",
             vec![
-                Node::leaf(NodeValue::Integer(1)),
-                Node::leaf(NodeValue::Integer(2)),
-                Node::leaf(NodeValue::Integer(3)),
+                Node::leaf(NodeValue::Number(1.0)),
+                Node::leaf(NodeValue::Number(2.0)),
+                Node::leaf(NodeValue::Number(3.0)),
             ],
         );
 
         test_eval("()", vec![Node::nil()]);
 
-        test_eval("(1)", vec![Node::list(&[NodeValue::Integer(1)])]);
+        test_eval("(1)", vec![Node::list(&[NodeValue::Number(1.0)])]);
 
         test_eval(
             "(1 2 3)",
             vec![Node::list(&[
-                NodeValue::Integer(1),
-                NodeValue::Integer(2),
-                NodeValue::Integer(3),
+                NodeValue::Number(1.0),
+                NodeValue::Number(2.0),
+                NodeValue::Number(3.0),
             ])],
         );
 
         test_eval(
             "(1) (2) (3)",
             vec![
-                Node::list(&[NodeValue::Integer(1)]),
-                Node::list(&[NodeValue::Integer(2)]),
-                Node::list(&[NodeValue::Integer(3)]),
+                Node::list(&[NodeValue::Number(1.0)]),
+                Node::list(&[NodeValue::Number(2.0)]),
+                Node::list(&[NodeValue::Number(3.0)]),
             ],
         );
 
         test_eval(
             "(1 2 (3 4 5))",
             vec![Node::list(&[
-                NodeValue::Integer(1),
-                NodeValue::Integer(2),
+                NodeValue::Number(1.0),
+                NodeValue::Number(2.0),
                 NodeValue::list(&[
-                    NodeValue::Integer(3),
-                    NodeValue::Integer(4),
-                    NodeValue::Integer(5),
+                    NodeValue::Number(3.0),
+                    NodeValue::Number(4.0),
+                    NodeValue::Number(5.0),
                 ]),
             ])],
         );
@@ -784,25 +787,25 @@ mod tests {
 
     #[test]
     fn simple_arithmetic() {
-        test_eval("(+ 2 2)", vec![Node::leaf(NodeValue::Integer(4))]);
-        test_eval("(- 2 2)", vec![Node::leaf(NodeValue::Integer(0))]);
-        test_eval("(* 2 2)", vec![Node::leaf(NodeValue::Integer(4))]);
-        test_eval("(/ 2 2)", vec![Node::leaf(NodeValue::Integer(1))]);
+        test_eval("(+ 2 2)", vec![Node::leaf(NodeValue::Number(4.0))]);
+        test_eval("(- 2 2)", vec![Node::leaf(NodeValue::Number(0.0))]);
+        test_eval("(* 2 2)", vec![Node::leaf(NodeValue::Number(4.0))]);
+        test_eval("(/ 2 2)", vec![Node::leaf(NodeValue::Number(1.0))]);
     }
 
     #[test]
     fn chained_arithmetic() {
-        test_eval("(+ 2 (- 2 2))", vec![Node::leaf(NodeValue::Integer(2))]);
-        test_eval("(- (* 2 2) 2)", vec![Node::leaf(NodeValue::Integer(2))]);
-        test_eval("(* 2 (/ 2 2))", vec![Node::leaf(NodeValue::Integer(2))]);
-        test_eval("(/ 2 (* 2 2))", vec![Node::leaf(NodeValue::Integer(0))]);
+        test_eval("(+ 2 (- 2 2))", vec![Node::leaf(NodeValue::Number(2.0))]);
+        test_eval("(- (* 2 2) 2)", vec![Node::leaf(NodeValue::Number(2.0))]);
+        test_eval("(* 2 (/ 2 2))", vec![Node::leaf(NodeValue::Number(2.0))]);
+        test_eval("(/ 2 (* 2 2))", vec![Node::leaf(NodeValue::Number(0.5))]);
     }
 
     #[test]
     fn negation() {
-        test_eval("(- 2)", vec![Node::leaf(NodeValue::Integer(-2))]);
-        test_eval("(- 0)", vec![Node::leaf(NodeValue::Integer(0))]);
-        test_eval("(+ 3 (- 2))", vec![Node::leaf(NodeValue::Integer(1))]);
+        test_eval("(- 2)", vec![Node::leaf(NodeValue::Number(-2.0))]);
+        test_eval("(- 0)", vec![Node::leaf(NodeValue::Number(0.0))]);
+        test_eval("(+ 3 (- 2))", vec![Node::leaf(NodeValue::Number(1.0))]);
     }
 
     #[test]
@@ -810,24 +813,24 @@ mod tests {
         test_eval(
             "(let x 2) (+ x 2)",
             vec![
-                Node::leaf(NodeValue::Integer(2)),
-                Node::leaf(NodeValue::Integer(4)),
+                Node::leaf(NodeValue::Number(2.0)),
+                Node::leaf(NodeValue::Number(4.0)),
             ],
         );
 
         test_eval(
             "(let x 3) (+ x x)",
             vec![
-                Node::leaf(NodeValue::Integer(3)),
-                Node::leaf(NodeValue::Integer(6)),
+                Node::leaf(NodeValue::Number(3.0)),
+                Node::leaf(NodeValue::Number(6.0)),
             ],
         );
 
         test_eval(
             "(let x 2) (+ (/ 2 2) x)",
             vec![
-                Node::leaf(NodeValue::Integer(2)),
-                Node::leaf(NodeValue::Integer(3)),
+                Node::leaf(NodeValue::Number(2.0)),
+                Node::leaf(NodeValue::Number(3.0)),
             ],
         );
     }
@@ -836,17 +839,17 @@ mod tests {
     fn func_def() {
         test_eval(
             "(def square (x) ((* x x))) (square 3)",
-            vec![Node::nil(), Node::leaf(NodeValue::Integer(9))],
+            vec![Node::nil(), Node::leaf(NodeValue::Number(9.0))],
         );
     }
 
     #[test]
     fn if_else() {
-        test_eval("(if 1 1 2)", vec![Node::leaf(NodeValue::Integer(1))]);
-        test_eval("(if (+ 1 2) 1 2)", vec![Node::leaf(NodeValue::Integer(1))]);
+        test_eval("(if 1 1 2)", vec![Node::leaf(NodeValue::Number(1.0))]);
+        test_eval("(if (+ 1 2) 1 2)", vec![Node::leaf(NodeValue::Number(1.0))]);
 
-        test_eval("(if 0 1 2)", vec![Node::leaf(NodeValue::Integer(2))]);
-        test_eval("(if () 1 2)", vec![Node::leaf(NodeValue::Integer(2))]);
+        test_eval("(if 0 1 2)", vec![Node::leaf(NodeValue::Number(2.0))]);
+        test_eval("(if () 1 2)", vec![Node::leaf(NodeValue::Number(2.0))]);
     }
 
     #[test]
@@ -869,12 +872,12 @@ mod tests {
             ",
             vec![
                 Node::nil(),
-                Node::leaf(NodeValue::Integer(0)),
-                Node::leaf(NodeValue::Integer(1)),
-                Node::leaf(NodeValue::Integer(1)),
-                Node::leaf(NodeValue::Integer(2)),
-                Node::leaf(NodeValue::Integer(3)),
-                Node::leaf(NodeValue::Integer(5)),
+                Node::leaf(NodeValue::Number(0.0)),
+                Node::leaf(NodeValue::Number(1.0)),
+                Node::leaf(NodeValue::Number(1.0)),
+                Node::leaf(NodeValue::Number(2.0)),
+                Node::leaf(NodeValue::Number(3.0)),
+                Node::leaf(NodeValue::Number(5.0)),
             ],
         );
 
@@ -894,10 +897,10 @@ mod tests {
             ",
             vec![
                 Node::nil(),
-                Node::leaf(NodeValue::Integer(1)),
-                Node::leaf(NodeValue::Integer(3)),
-                Node::leaf(NodeValue::Integer(9)),
-                Node::leaf(NodeValue::Integer(8)),
+                Node::leaf(NodeValue::Number(1.0)),
+                Node::leaf(NodeValue::Number(3.0)),
+                Node::leaf(NodeValue::Number(9.0)),
+                Node::leaf(NodeValue::Number(8.0)),
             ],
         )
     }
@@ -927,10 +930,10 @@ mod tests {
             ",
             vec![
                 Node::nil(),
-                Node::leaf(NodeValue::Integer(0)),
-                Node::leaf(NodeValue::Integer(1)),
-                Node::leaf(NodeValue::Integer(2)),
-                Node::leaf(NodeValue::Integer(3)),
+                Node::leaf(NodeValue::Number(0.0)),
+                Node::leaf(NodeValue::Number(1.0)),
+                Node::leaf(NodeValue::Number(2.0)),
+                Node::leaf(NodeValue::Number(3.0)),
             ],
         )
     }
