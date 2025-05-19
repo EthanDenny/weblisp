@@ -1,4 +1,5 @@
 use std::{collections::HashMap, fmt, rc::Rc};
+use wasm_bindgen::prelude::*;
 
 // Error strings
 
@@ -524,6 +525,14 @@ pub fn eval(mut expr: Node, scope: &mut Scope) -> Node {
         }
         _ => expr,
     }
+}
+
+// WASM
+
+#[wasm_bindgen]
+pub fn wasm_parse(text: String) -> String {
+    let result = parse(text);
+    return format!("{:?}", result);
 }
 
 // Tests
