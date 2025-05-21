@@ -965,4 +965,54 @@ mod tests {
             ],
         )
     }
+
+    fn test_double_eval(text1: &str, text2: &str) {
+        let eval_text = |text: &str| {
+            let tokens = parse_str(text);
+            let block = construct(tokens);
+
+            let mut scope = Scope::new();
+
+            block
+                .into_iter()
+                .map(|expr| eval(expr, &mut scope))
+                .collect::<Vec<Node>>()
+        };
+
+        let result1 = eval_text(text1);
+        let result2 = eval_text(text2);
+
+        assert_eq!(result1, result2);
+    }
+
+    #[test]
+    fn double_eval() {
+        test_double_eval("(+ 1 2)", "3");
+        test_double_eval("(cons 1 (+ 2 3))", "(1 5)");
+        test_double_eval("(cons 1 (+ 2 3))", "(1 5)");
+
+        test_double_eval(
+            "
+            (def sqrt (x) (
+                (def inner_sqrt (x n) (
+                    (let n_squared (* n n))
+                    (if (= n_squared x)
+                        n
+                        (if (> n_squared x)
+                            (- n 1)
+                            (inner_sqrt x (+ n 1))
+                        )
+                    )
+                ))
+                (inner_sqrt x 0)
+            ))
+
+            (sqrt 0)
+            (sqrt 1)
+            (sqrt 4)
+            (sqrt 10)
+            ",
+            "() 0 1 2 3",
+        );
+    }
 }
