@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt, rc::Rc};
+use std::{collections::HashMap, fmt};
 use wasm_bindgen::prelude::*;
 
 // Error strings
@@ -140,9 +140,11 @@ pub fn parse_str(text: &str) -> Vec<Token> {
 
 #[derive(PartialEq, Debug, Clone)]
 pub enum NodeValue {
-    List(Rc<Node>),
+    List(Box<Node>),
     Number(f64),
     Atom(String),
+    Lambda(FuncDef),
+    Builtin(String),
     Nil,
 }
 
@@ -151,17 +153,19 @@ impl fmt::Display for NodeValue {
         match self {
             NodeValue::Number(n) => write!(f, "{}", n),
             NodeValue::Atom(s) => write!(f, "{}", s),
+            NodeValue::Builtin(s) => write!(f, "{}", s),
             NodeValue::Nil => write!(f, "nil"),
+            NodeValue::Lambda(_) => write!(f, "lambda"),
             NodeValue::List(node) => {
                 write!(f, "(")?;
-                let mut current = Some(Rc::clone(node));
+                let mut current = Some(Box::clone(node));
                 let mut first = true;
-                while let Some(rc_node) = current {
+                while let Some(ptr) = current {
                     if !first {
                         write!(f, " ")?;
                     }
-                    write!(f, "{}", rc_node.value)?;
-                    current = rc_node.next.clone();
+                    write!(f, "{}", ptr.value)?;
+                    current = ptr.next.clone();
                     first = false;
                 }
                 write!(f, ")")
@@ -180,7 +184,7 @@ impl NodeValue {
 
         match node.value {
             NodeValue::Nil => NodeValue::Nil,
-            _ => NodeValue::List(Rc::new(node)),
+            _ => NodeValue::List(Box::new(node)),
         }
     }
 }
@@ -188,16 +192,19 @@ impl NodeValue {
 #[derive(PartialEq, Debug, Clone)]
 pub struct Node {
     value: NodeValue,
-    next: Option<Rc<Node>>,
+    next: Option<Box<Node>>,
 }
 
 impl Node {
-    fn new(value: NodeValue, next: Option<Rc<Node>>) -> Node {
-        Node { value, next }
+    fn new(value: NodeValue, next: Node) -> Node {
+        Node {
+            value,
+            next: Some(next.into()),
+        }
     }
 
     fn leaf(value: NodeValue) -> Node {
-        Node::new(value, None)
+        Node { value, next: None }
     }
 
     fn nil() -> Node {
@@ -206,9 +213,9 @@ impl Node {
 
     fn list(elems: &[NodeValue]) -> Node {
         if elems.len() > 1 {
-            Node::new(elems[0].clone(), Some(Rc::new(Node::list(&elems[1..]))))
+            Node::new(elems[0].clone(), Node::list(&elems[1..]))
         } else if elems.len() == 1 {
-            Node::new(elems[0].clone(), None)
+            Node::leaf(elems[0].clone())
         } else {
             Node::nil()
         }
@@ -249,7 +256,7 @@ pub fn construct(tokens: Vec<Token>) -> Vec<Node> {
             TokenKind::LeftParen => Node::list(&construct_list(&mut tok_iter)),
             TokenKind::RightParen => unreachable!(),
             TokenKind::Error(msg) => panic!("{}", msg),
-            kind => Node::new(construct_value(kind), None),
+            kind => Node::leaf(construct_value(kind)),
         };
 
         nodes.push(node);
@@ -260,22 +267,15 @@ pub fn construct(tokens: Vec<Token>) -> Vec<Node> {
 
 // Eval types functions
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FuncDef {
     args: Vec<String>,
     body: Vec<NodeValue>,
 }
 
 #[derive(Debug, Clone)]
-pub enum Var {
-    Value(NodeValue),
-    Func(FuncDef),
-    Empty,
-}
-
-#[derive(Debug, Clone)]
 pub struct Scope {
-    vars: HashMap<String, Var>,
+    vars: HashMap<String, NodeValue>,
 }
 
 impl Scope {
@@ -286,15 +286,19 @@ impl Scope {
     }
 
     pub fn set(&mut self, name: String, value: NodeValue) {
-        self.vars.insert(name, Var::Value(value));
+        self.vars.insert(name, value);
     }
 
     pub fn def(&mut self, name: String, args: Vec<String>, body: Vec<NodeValue>) {
-        self.vars.insert(name, Var::Func(FuncDef { args, body }));
+        self.vars
+            .insert(name, NodeValue::Lambda(FuncDef { args, body }));
     }
 
-    pub fn get(&mut self, name: String) -> Var {
-        self.vars.get(&name).cloned().unwrap_or(Var::Empty)
+    pub fn get(&mut self, name: String) -> NodeValue {
+        match self.vars.get(&name).cloned() {
+            Some(value) => value,
+            None => NodeValue::Nil,
+        }
     }
 
     pub fn make_child(&mut self) -> Scope {
@@ -302,7 +306,7 @@ impl Scope {
     }
 }
 
-pub fn extract_args(arg_head: Option<Rc<Node>>) -> Vec<NodeValue> {
+pub fn extract_args(arg_head: Option<Box<Node>>) -> Vec<NodeValue> {
     if let Some(args) = arg_head {
         let args_ref = args.as_ref();
 
@@ -321,7 +325,7 @@ pub fn extract_args(arg_head: Option<Rc<Node>>) -> Vec<NodeValue> {
     }
 }
 
-pub fn eval_macro(macro_name: &str, args_list: Option<Rc<Node>>, scope: &mut Scope) -> Node {
+pub fn eval_macro(macro_name: &str, args_list: Option<Box<Node>>, scope: &mut Scope) -> Node {
     let args = extract_args(args_list);
 
     match macro_name {
@@ -369,7 +373,16 @@ pub fn eval_macro(macro_name: &str, args_list: Option<Rc<Node>>, scope: &mut Sco
     }
 }
 
-pub fn eval_builtin(func_name: String, args_list: Option<Rc<Node>>, scope: &mut Scope) -> Node {
+pub fn is_builtin(atom: &str) -> bool {
+    match atom {
+        "if" | "+" | "*" | "/" | "<" | ">" | "<=" | ">=" | "=" | "-" | "let" | "def" | "cons" => {
+            true
+        }
+        _ => false,
+    }
+}
+
+pub fn eval_builtin(func_name: String, args_list: Option<Box<Node>>, scope: &mut Scope) -> Node {
     let func_str = func_name.as_str();
 
     // Escape to special-case macro land if necessary
@@ -383,6 +396,15 @@ pub fn eval_builtin(func_name: String, args_list: Option<Rc<Node>>, scope: &mut 
     let args = extract_args(args_list);
 
     match func_str {
+        "cons" => {
+            if args.len() == 2 {
+                let head = eval_value(args[0].clone(), scope);
+                let tail = eval_value(args[1].clone(), scope);
+                Node::new(head, Node::leaf(tail))
+            } else {
+                panic!("Expected two arguments")
+            }
+        }
         "if" => {
             if args.len() == 3 {
                 let predicate = eval_value(args[0].clone(), scope);
@@ -460,7 +482,7 @@ pub fn eval_builtin(func_name: String, args_list: Option<Rc<Node>>, scope: &mut 
     }
 }
 
-pub fn eval_fn(func_def: FuncDef, args_list: Option<Rc<Node>>, scope: &mut Scope) -> Node {
+pub fn eval_fn(func_def: FuncDef, args_list: Option<Box<Node>>, scope: &mut Scope) -> Node {
     let arg_names = func_def.args;
     let body = func_def.body;
     let args = extract_args(args_list);
@@ -484,18 +506,35 @@ pub fn eval_fn(func_def: FuncDef, args_list: Option<Rc<Node>>, scope: &mut Scope
 }
 
 pub fn eval_value(value: NodeValue, scope: &mut Scope) -> NodeValue {
-    eval(Node::leaf(value), scope).value
+    match value {
+        NodeValue::Atom(atom) => {
+            if is_builtin(&atom) {
+                NodeValue::Builtin(atom)
+            } else {
+                scope.get(atom)
+            }
+        }
+        NodeValue::List(ptr) => {
+            let result_node = eval(ptr.as_ref().clone(), scope);
+            match result_node.next {
+                Some(_) => NodeValue::List(result_node.into()),
+                None => result_node.value,
+            }
+        }
+        _ => value,
+    }
 }
 
-pub fn eval(expr: Node, scope: &mut Scope) -> Node {
-    match &expr.value {
-        NodeValue::Atom(atom) => match scope.get(atom.clone()) {
-            Var::Value(value) => Node::leaf(value),
-            Var::Func(func_def) => eval_fn(func_def, expr.next.clone(), scope),
-            Var::Empty => eval_builtin(atom.clone(), expr.next.clone(), scope),
+pub fn eval(node: Node, scope: &mut Scope) -> Node {
+    let value = eval_value(node.value, scope);
+
+    match node.next {
+        Some(ptr) => match value {
+            NodeValue::Builtin(func_name) => eval_builtin(func_name, Some(ptr), scope),
+            NodeValue::Lambda(func_def) => eval_fn(func_def, Some(ptr), scope),
+            _ => Node::new(value, eval(*ptr, scope)),
         },
-        NodeValue::List(ptr) => eval(ptr.as_ref().clone(), scope),
-        _ => expr,
+        None => Node::leaf(value),
     }
 }
 
@@ -637,9 +676,9 @@ mod tests {
         test_construction(
             "1 2 3",
             vec![
-                Node::new(NodeValue::Number(1.0), None),
-                Node::new(NodeValue::Number(2.0), None),
-                Node::new(NodeValue::Number(3.0), None),
+                Node::leaf(NodeValue::Number(1.0)),
+                Node::leaf(NodeValue::Number(2.0)),
+                Node::leaf(NodeValue::Number(3.0)),
             ],
         );
 
@@ -739,6 +778,37 @@ mod tests {
                     NodeValue::Number(4.0),
                     NodeValue::Number(5.0),
                 ]),
+            ])],
+        );
+    }
+
+    #[test]
+    fn complex_lists() {
+        test_eval(
+            "((3 4 5) 6 7)",
+            vec![Node::list(&[
+                NodeValue::list(&[
+                    NodeValue::Number(3.0),
+                    NodeValue::Number(4.0),
+                    NodeValue::Number(5.0),
+                ]),
+                NodeValue::Number(6.0),
+                NodeValue::Number(7.0),
+            ])],
+        );
+
+        test_eval(
+            "(cons ((3 4 5) 6) (cons 7 8))",
+            vec![Node::list(&[
+                NodeValue::list(&[
+                    NodeValue::list(&[
+                        NodeValue::Number(3.0),
+                        NodeValue::Number(4.0),
+                        NodeValue::Number(5.0),
+                    ]),
+                    NodeValue::Number(6.0),
+                ]),
+                NodeValue::list(&[NodeValue::Number(7.0), NodeValue::Number(8.0)]),
             ])],
         );
     }
