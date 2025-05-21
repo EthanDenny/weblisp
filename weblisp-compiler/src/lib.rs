@@ -5,7 +5,6 @@ use wasm_bindgen::prelude::*;
 
 const MISMATCHED_PAREN_ERROR: &str = "Closing parenthesis without opening parenthesis";
 const UNCLOSED_PAREN_ERROR: &str = "Unclosed parenthesis";
-const DOUBLE_QUOTE_ERROR: &str = "Double quoting is not allowed";
 
 // Parsing types and functions
 
@@ -14,7 +13,6 @@ pub enum TokenKind {
     LeftParen,
     RightParen,
     Atom(String),
-    Quote(String),
     Number(f64),
     Error(String),
 }
@@ -22,10 +20,6 @@ pub enum TokenKind {
 impl TokenKind {
     pub fn atom(inner: &str) -> TokenKind {
         TokenKind::Atom(inner.to_string())
-    }
-
-    pub fn quote(inner: &str) -> TokenKind {
-        TokenKind::Quote(inner.to_string())
     }
 
     pub fn error(msg: &str) -> TokenKind {
@@ -105,34 +99,20 @@ pub fn parse(text: String) -> Vec<Token> {
                 }
             }
             _ => {
-                let is_quote = c == '\'';
+                let mut inner = String::from(c);
 
-                let mut inner = if is_quote {
-                    String::new()
-                } else {
-                    String::from(c)
-                };
-
-                if is_quote && chars.peek() == Some(&'\'') {
-                    Some(TokenKind::error(DOUBLE_QUOTE_ERROR))
-                } else {
-                    while let Some(&p) = chars.peek() {
-                        match p {
-                            '(' | ')' => break,
-                            _ if p.is_whitespace() => break,
-                            _ => {
-                                inner.push(p);
-                                chars.next();
-                            }
+                while let Some(&p) = chars.peek() {
+                    match p {
+                        '(' | ')' => break,
+                        _ if p.is_whitespace() => break,
+                        _ => {
+                            inner.push(p);
+                            chars.next();
                         }
                     }
-
-                    if is_quote {
-                        Some(TokenKind::Quote(inner))
-                    } else {
-                        Some(TokenKind::Atom(inner))
-                    }
                 }
+
+                Some(TokenKind::Atom(inner))
             }
         };
 
@@ -163,7 +143,6 @@ pub enum NodeValue {
     List(Rc<Node>),
     Number(f64),
     Atom(String),
-    Quote(String),
     Nil,
 }
 
@@ -172,7 +151,6 @@ impl fmt::Display for NodeValue {
         match self {
             NodeValue::Number(n) => write!(f, "{}", n),
             NodeValue::Atom(s) => write!(f, "{}", s),
-            NodeValue::Quote(s) => write!(f, "'{}", s),
             NodeValue::Nil => write!(f, "nil"),
             NodeValue::List(node) => {
                 write!(f, "(")?;
@@ -195,10 +173,6 @@ impl fmt::Display for NodeValue {
 impl NodeValue {
     pub fn atom(value: &str) -> NodeValue {
         NodeValue::Atom(value.to_string())
-    }
-
-    pub fn quote(value: &str) -> NodeValue {
-        NodeValue::Quote(value.to_string())
     }
 
     pub fn list(elems: &[NodeValue]) -> NodeValue {
@@ -244,7 +218,6 @@ impl Node {
 pub fn construct_value(kind: TokenKind) -> NodeValue {
     match kind {
         TokenKind::Atom(inner) => NodeValue::Atom(inner),
-        TokenKind::Quote(inner) => NodeValue::Quote(inner),
         TokenKind::Number(inner) => NodeValue::Number(inner),
         _ => unreachable!(),
     }
@@ -514,7 +487,7 @@ pub fn eval_value(value: NodeValue, scope: &mut Scope) -> NodeValue {
     eval(Node::leaf(value), scope).value
 }
 
-pub fn eval(mut expr: Node, scope: &mut Scope) -> Node {
+pub fn eval(expr: Node, scope: &mut Scope) -> Node {
     match &expr.value {
         NodeValue::Atom(atom) => match scope.get(atom.clone()) {
             Var::Value(value) => Node::leaf(value),
@@ -522,10 +495,6 @@ pub fn eval(mut expr: Node, scope: &mut Scope) -> Node {
             Var::Empty => eval_builtin(atom.clone(), expr.next.clone(), scope),
         },
         NodeValue::List(ptr) => eval(ptr.as_ref().clone(), scope),
-        NodeValue::Quote(inner) => {
-            expr.value = NodeValue::Atom(inner.clone());
-            expr
-        }
         _ => expr,
     }
 }
@@ -621,39 +590,28 @@ mod tests {
     }
 
     #[test]
-    fn atoms_and_quotes() {
+    fn atoms() {
         test_parsing("a", vec![TokenKind::atom("a")]);
-
-        test_parsing(
-            "a '+ _",
-            vec![
-                TokenKind::atom("a"),
-                TokenKind::quote("+"),
-                TokenKind::atom("_"),
-            ],
-        );
 
         test_parsing("abc", vec![TokenKind::atom("abc")]);
 
-        test_parsing("'ab1cd", vec![TokenKind::quote("ab1cd")]);
-
         test_parsing(
-            "(a '+ '_)",
+            "(a + _)",
             vec![
                 TokenKind::LeftParen,
                 TokenKind::atom("a"),
-                TokenKind::quote("+"),
-                TokenKind::quote("_"),
+                TokenKind::atom("+"),
+                TokenKind::atom("_"),
                 TokenKind::RightParen,
             ],
         );
 
         test_parsing(
-            "(a '+ (c d e))",
+            "(a + (c d e))",
             vec![
                 TokenKind::LeftParen,
                 TokenKind::atom("a"),
-                TokenKind::quote("+"),
+                TokenKind::atom("+"),
                 TokenKind::LeftParen,
                 TokenKind::atom("c"),
                 TokenKind::atom("d"),
