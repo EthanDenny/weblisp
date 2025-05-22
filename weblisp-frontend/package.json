@@ -2,6 +2,7 @@
   "name": "weblisp-frontend",
   "private": true,
   "type": "module",
+  "homepage": "http://ethandenny.dev/weblisp/",
   "scripts": {
     "build": "react-router build",
     "dev": "react-router dev",
