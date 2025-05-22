@@ -156,20 +156,7 @@ impl fmt::Display for NodeValue {
             NodeValue::Builtin(s) => write!(f, "{}", s),
             NodeValue::Nil => write!(f, "nil"),
             NodeValue::Lambda(_) => write!(f, "lambda"),
-            NodeValue::List(node) => {
-                write!(f, "(")?;
-                let mut current = Some(Box::clone(node));
-                let mut first = true;
-                while let Some(ptr) = current {
-                    if !first {
-                        write!(f, " ")?;
-                    }
-                    write!(f, "{}", ptr.value)?;
-                    current = ptr.next.clone();
-                    first = false;
-                }
-                write!(f, ")")
-            }
+            NodeValue::List(node) => write!(f, "({})", node),
         }
     }
 }
@@ -193,6 +180,22 @@ impl NodeValue {
 pub struct Node {
     value: NodeValue,
     next: Option<Box<Node>>,
+}
+
+impl fmt::Display for Node {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut current = Some(Box::new(self.clone()));
+        let mut first = true;
+        while let Some(ptr) = current {
+            if !first {
+                write!(f, " ")?;
+            }
+            write!(f, "{}", ptr.value)?;
+            current = ptr.next.clone();
+            first = false;
+        }
+        Ok(())
+    }
 }
 
 impl Node {
@@ -541,9 +544,17 @@ pub fn eval(node: Node, scope: &mut Scope) -> Node {
 // WASM
 
 #[wasm_bindgen]
-pub fn wasm_parse(text: String) -> String {
-    let result = parse(text);
-    return format!("{:?}", result);
+pub fn wasm_eval(text: String) -> String {
+    let tokens = parse(text);
+    let block = construct(tokens);
+    let mut scope = Scope::new();
+
+    block
+        .into_iter()
+        .map(|expr| eval(expr, &mut scope))
+        .map(|node| format!("{}", node))
+        .collect::<Vec<String>>()
+        .join("\n")
 }
 
 // Tests
