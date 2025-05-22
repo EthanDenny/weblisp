@@ -1,0 +1,1 @@
+import{w as e}from"./with-props-Cr-61YSs.js";import{o as t,s as o}from"./chunk-D4RADZKF-Dgj59hC6.js";function s({}){return[{title:"New React Router App"},{name:"description",content:"Welcome to React Router!"}]}const m=e(function(){return t.jsx("div",{children:t.jsx(o,{to:"/play",children:"Try Weblisp"})})});export{m as default,s as meta};
