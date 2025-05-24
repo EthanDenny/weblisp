@@ -278,12 +278,14 @@ pub struct FuncDef {
 
 #[derive(Debug, Clone)]
 pub struct Scope {
+    stdout: String,
     vars: HashMap<String, NodeValue>,
 }
 
 impl Scope {
     pub fn new() -> Scope {
         Scope {
+            stdout: String::new(),
             vars: HashMap::new(),
         }
     }
@@ -378,9 +380,8 @@ pub fn eval_macro(macro_name: &str, args_list: Option<Box<Node>>, scope: &mut Sc
 
 pub fn is_builtin(atom: &str) -> bool {
     match atom {
-        "if" | "+" | "*" | "/" | "<" | ">" | "<=" | ">=" | "=" | "-" | "let" | "def" | "cons" => {
-            true
-        }
+        "if" | "+" | "*" | "/" | "<" | ">" | "<=" | ">=" | "=" | "-" | "let" | "def" | "cons"
+        | "print" | "println" => true,
         _ => false,
     }
 }
@@ -399,6 +400,23 @@ pub fn eval_builtin(func_name: String, args_list: Option<Box<Node>>, scope: &mut
     let args = extract_args(args_list);
 
     match func_str {
+        "print" | "println" => {
+            for arg in args {
+                let value = eval_value(arg, scope);
+
+                if scope.stdout.len() > 0 && scope.stdout.chars().last() != Some('\n') {
+                    scope.stdout += " "
+                }
+
+                scope.stdout += format!("{}", value).as_str();
+            }
+
+            if func_str == "println" {
+                scope.stdout += "\n";
+            }
+
+            Node::nil()
+        }
         "cons" => {
             if args.len() == 2 {
                 let head = eval_value(args[0].clone(), scope);
@@ -549,12 +567,11 @@ pub fn wasm_eval(text: String) -> String {
     let block = construct(tokens);
     let mut scope = Scope::new();
 
-    block
-        .into_iter()
-        .map(|expr| eval(expr, &mut scope))
-        .map(|node| format!("{}", node))
-        .collect::<Vec<String>>()
-        .join("\n")
+    block.into_iter().for_each(|expr| {
+        eval(expr, &mut scope);
+    });
+
+    scope.stdout
 }
 
 // Tests

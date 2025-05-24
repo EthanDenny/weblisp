@@ -2,27 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import init, { wasm_eval } from "../../weblisp-compiler/pkg/weblisp_compiler";
 import wasmUrl from "../../weblisp-compiler/pkg/weblisp_compiler_bg.wasm?url";
-
-const starterCode = `
-(def sqrt (x) (
-    (def inner_sqrt (x n) (
-        (let n_squared (* n n))
-        (if (= n_squared x)
-            n
-            (if (> n_squared x)
-                (- n 1)
-                (inner_sqrt x (+ n 1))
-            )
-        )
-    ))
-    (inner_sqrt x 0)
-))
-
-(sqrt 0)
-(sqrt 1)
-(sqrt 4)
-(sqrt 10)
-`.slice(1);
+import starterCode from "./starter.weblisp?raw";
 
 async function evalCode(text: string): Promise<string> {
   await init(wasmUrl);
