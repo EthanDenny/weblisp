@@ -1,10 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import type { Route } from "./+types/home";
 
-import init, {
-  wasm_eval,
-} from "../../../weblisp-compiler/pkg/weblisp_compiler";
-import wasmUrl from "../../../weblisp-compiler/pkg/weblisp_compiler_bg.wasm?url";
+import init, { wasm_eval } from "../../weblisp-compiler/pkg/weblisp_compiler";
+import wasmUrl from "../../weblisp-compiler/pkg/weblisp_compiler_bg.wasm?url";
 
 const starterCode = `
 (def sqrt (x) (
@@ -27,13 +24,6 @@ const starterCode = `
 (sqrt 10)
 `.slice(1);
 
-export function meta({}: Route.MetaArgs) {
-  return [
-    { title: "Play" },
-    { name: "description", content: "Play with Weblisp!" },
-  ];
-}
-
 async function evalCode(text: string): Promise<string> {
   await init(wasmUrl);
   return wasm_eval(text);
@@ -49,10 +39,10 @@ async function submitCode(
   }
 }
 
-export default function Play() {
+export default function App() {
   const [inputValue, setInputValue] = useState("");
   const outputRef = useRef<HTMLDivElement | null>(null);
-  const debounceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const debounceTimeoutRef = useRef<number | null>(null);
 
   useEffect(() => {
     const savedValue = localStorage.getItem("inputValue");
