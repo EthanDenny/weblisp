@@ -14,6 +14,7 @@ pub enum TokenKind {
     RightParen,
     Atom(String),
     Number(f64),
+    String(String),
     Error(String),
 }
 
@@ -47,17 +48,30 @@ pub fn parse(text: String) -> Vec<Token> {
         let kind = match c {
             '(' => {
                 paren_level += 1;
-                Some(TokenKind::LeftParen)
+                TokenKind::LeftParen
             }
             ')' => {
                 if paren_level > 0 {
                     paren_level -= 1;
-                    Some(TokenKind::RightParen)
+                    TokenKind::RightParen
                 } else {
-                    Some(TokenKind::error(MISMATCHED_PAREN_ERROR))
+                    TokenKind::error(MISMATCHED_PAREN_ERROR)
                 }
             }
-            ' ' | '\n' => None,
+            ' ' | '\n' => continue,
+            '"' => {
+                let mut str = String::new();
+
+                while let Some(p) = chars.next() {
+                    if p != '"' {
+                        str.push(p);
+                    } else {
+                        break;
+                    }
+                }
+
+                TokenKind::String(str)
+            }
             _ if c.is_digit(10) => {
                 let mut num = String::from(c);
                 let mut bad_char = None;
@@ -81,20 +95,18 @@ pub fn parse(text: String) -> Vec<Token> {
                 }
 
                 if let Some(c) = bad_char {
-                    Some(TokenKind::Error(format!(
-                        "'{c}' cannot be part of an number",
-                    )))
+                    TokenKind::Error(format!("'{c}' cannot be part of an number",))
                 } else {
                     let parsed = num.parse::<f64>();
 
                     match parsed {
-                        Ok(v) => Some(TokenKind::Number(v)),
+                        Ok(v) => TokenKind::Number(v),
 
                         // TODO: Figure out a way to test this (shoould theoretically never trigger)
-                        Err(_) => Some(TokenKind::Error(format!(
+                        Err(_) => TokenKind::Error(format!(
                             "Tried to parse number \"{}\", but something went wrong",
                             num,
-                        ))),
+                        )),
                     }
                 }
             }
@@ -112,17 +124,15 @@ pub fn parse(text: String) -> Vec<Token> {
                     }
                 }
 
-                Some(TokenKind::Atom(inner))
+                TokenKind::Atom(inner)
             }
         };
 
-        if let Some(kind) = kind {
-            if let TokenKind::Error(_) = kind {
-                return vec![Token::new(kind)];
-            }
-
-            tokens.push(Token::new(kind));
+        if let TokenKind::Error(_) = kind {
+            return vec![Token::new(kind)];
         }
+
+        tokens.push(Token::new(kind));
     }
 
     if paren_level != 0 {
@@ -145,6 +155,7 @@ pub enum NodeValue {
     Atom(String),
     Lambda(FuncDef),
     Builtin(String),
+    String(String),
     Nil,
 }
 
@@ -156,6 +167,7 @@ impl fmt::Display for NodeValue {
             NodeValue::Builtin(s) => write!(f, "{}", s),
             NodeValue::Nil => write!(f, "nil"),
             NodeValue::Lambda(_) => write!(f, "lambda"),
+            NodeValue::String(s) => write!(f, "{}", s),
             NodeValue::List(node) => write!(f, "({})", node),
         }
     }
@@ -164,6 +176,10 @@ impl fmt::Display for NodeValue {
 impl NodeValue {
     pub fn atom(value: &str) -> NodeValue {
         NodeValue::Atom(value.to_string())
+    }
+
+    pub fn string(value: &str) -> NodeValue {
+        NodeValue::String(value.to_string())
     }
 
     pub fn list(elems: &[NodeValue]) -> NodeValue {
@@ -229,7 +245,8 @@ pub fn construct_value(kind: TokenKind) -> NodeValue {
     match kind {
         TokenKind::Atom(inner) => NodeValue::Atom(inner),
         TokenKind::Number(inner) => NodeValue::Number(inner),
-        _ => unreachable!(),
+        TokenKind::String(inner) => NodeValue::String(inner),
+        TokenKind::LeftParen | TokenKind::RightParen | TokenKind::Error(_) => unreachable!(),
     }
 }
 
@@ -1042,5 +1059,13 @@ mod tests {
             ",
             "() 0 1 2 3",
         );
+    }
+
+    #[test]
+    fn strings() {
+        test_eval(
+            "\"Hello, World\"",
+            vec![Node::leaf(NodeValue::string("Hello, World"))],
+        )
     }
 }
