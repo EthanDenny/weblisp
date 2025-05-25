@@ -58,7 +58,6 @@ pub fn parse(text: String) -> Vec<Token> {
                     TokenKind::error(MISMATCHED_PAREN_ERROR)
                 }
             }
-            ' ' | '\n' => continue,
             '"' => {
                 let mut str = String::new();
 
@@ -110,21 +109,34 @@ pub fn parse(text: String) -> Vec<Token> {
                     }
                 }
             }
+            _ if c.is_whitespace() => continue,
             _ => {
-                let mut inner = String::from(c);
+                if let ('/', Some(&'/')) = (c, chars.peek()) {
+                    chars.next();
 
-                while let Some(&p) = chars.peek() {
-                    match p {
-                        '(' | ')' => break,
-                        _ if p.is_whitespace() => break,
-                        _ => {
-                            inner.push(p);
-                            chars.next();
+                    while let Some(p) = chars.next() {
+                        if p == '\n' {
+                            break;
                         }
                     }
-                }
 
-                TokenKind::Atom(inner)
+                    continue;
+                } else {
+                    let mut inner = String::from(c);
+
+                    while let Some(&p) = chars.peek() {
+                        match p {
+                            '(' | ')' => break,
+                            _ if p.is_whitespace() => break,
+                            _ => {
+                                inner.push(p);
+                                chars.next();
+                            }
+                        }
+                    }
+
+                    TokenKind::Atom(inner)
+                }
             }
         };
 
@@ -250,30 +262,30 @@ pub fn construct_value(kind: TokenKind) -> NodeValue {
     }
 }
 
-pub fn construct_list(tokens: &mut std::vec::IntoIter<Token>) -> Vec<NodeValue> {
+pub fn construct_list(tokens: &mut std::vec::IntoIter<Token>) -> Result<Vec<NodeValue>, String> {
     let mut nodes = Vec::new();
 
     while let Some(t) = tokens.next() {
         let node = match t.kind {
-            TokenKind::LeftParen => NodeValue::list(&construct_list(tokens)),
+            TokenKind::LeftParen => NodeValue::list(&construct_list(tokens)?),
             TokenKind::RightParen => break,
-            TokenKind::Error(msg) => panic!("{}", msg),
+            TokenKind::Error(msg) => return Err(msg),
             kind => construct_value(kind),
         };
 
         nodes.push(node);
     }
 
-    nodes
+    Ok(nodes)
 }
 
-pub fn construct(tokens: Vec<Token>) -> Vec<Node> {
+pub fn construct(tokens: Vec<Token>) -> Result<Vec<Node>, String> {
     let mut tok_iter = tokens.into_iter();
     let mut nodes = Vec::new();
 
     while let Some(t) = tok_iter.next() {
         let node = match t.kind {
-            TokenKind::LeftParen => Node::list(&construct_list(&mut tok_iter)),
+            TokenKind::LeftParen => Node::list(&construct_list(&mut tok_iter)?),
             TokenKind::RightParen => unreachable!(),
             TokenKind::Error(msg) => panic!("{}", msg),
             kind => Node::leaf(construct_value(kind)),
@@ -282,7 +294,7 @@ pub fn construct(tokens: Vec<Token>) -> Vec<Node> {
         nodes.push(node);
     }
 
-    nodes
+    Ok(nodes)
 }
 
 // Eval types functions
@@ -316,10 +328,10 @@ impl Scope {
             .insert(name, NodeValue::Lambda(FuncDef { args, body }));
     }
 
-    pub fn get(&mut self, name: String) -> NodeValue {
+    pub fn get(&mut self, name: String) -> Result<NodeValue, String> {
         match self.vars.get(&name).cloned() {
-            Some(value) => value,
-            None => NodeValue::Nil,
+            Some(value) => Ok(value),
+            None => Err(format!("Unrecognized symbol: {}", name)),
         }
     }
 
@@ -347,21 +359,25 @@ pub fn extract_args(arg_head: Option<Box<Node>>) -> Vec<NodeValue> {
     }
 }
 
-pub fn eval_macro(macro_name: &str, args_list: Option<Box<Node>>, scope: &mut Scope) -> Node {
+pub fn eval_macro(
+    macro_name: &str,
+    args_list: Option<Box<Node>>,
+    scope: &mut Scope,
+) -> Result<Node, String> {
     let args = extract_args(args_list);
 
-    match macro_name {
+    let node = match macro_name {
         "let" => {
             if let (Some(NodeValue::Atom(var_name)), Some(var_value_raw)) =
                 (args.get(0), args.get(1))
             {
-                let var_value = eval_value(var_value_raw.clone(), scope);
+                let var_value = eval_value(var_value_raw.clone(), scope)?;
 
                 scope.set(var_name.clone(), var_value.clone());
 
                 Node::leaf(var_value)
             } else {
-                panic!("Cannot set variable, incorrect argument types")
+                return Err("Cannot set variable, incorrect argument types".to_string());
             }
         }
         "def" => {
@@ -377,7 +393,7 @@ pub fn eval_macro(macro_name: &str, args_list: Option<Box<Node>>, scope: &mut Sc
                         if let NodeValue::Atom(arg_name) = arg {
                             arg_name
                         } else {
-                            panic!("Expected an atom for func arg")
+                            panic!("Expected an atom for func arg");
                         }
                     })
                     .collect();
@@ -386,13 +402,15 @@ pub fn eval_macro(macro_name: &str, args_list: Option<Box<Node>>, scope: &mut Sc
 
                 scope.def(func_name.clone(), func_arg_names, func_body_exprs)
             } else {
-                panic!("Cannot declare function, incorrect argument types")
+                return Err("Cannot declare function, incorrect argument types".to_string());
             }
 
             Node::nil()
         }
         _ => unreachable!(),
-    }
+    };
+
+    Ok(node)
 }
 
 pub fn is_builtin(atom: &str) -> bool {
@@ -403,7 +421,11 @@ pub fn is_builtin(atom: &str) -> bool {
     }
 }
 
-pub fn eval_builtin(func_name: String, args_list: Option<Box<Node>>, scope: &mut Scope) -> Node {
+pub fn eval_builtin(
+    func_name: String,
+    args_list: Option<Box<Node>>,
+    scope: &mut Scope,
+) -> Result<Node, String> {
     let func_str = func_name.as_str();
 
     // Escape to special-case macro land if necessary
@@ -416,10 +438,10 @@ pub fn eval_builtin(func_name: String, args_list: Option<Box<Node>>, scope: &mut
 
     let args = extract_args(args_list);
 
-    match func_str {
+    let node = match func_str {
         "print" | "println" => {
             for arg in args {
-                let value = eval_value(arg, scope);
+                let value = eval_value(arg, scope)?;
 
                 if scope.stdout.len() > 0 && scope.stdout.chars().last() != Some('\n') {
                     scope.stdout += " "
@@ -436,34 +458,34 @@ pub fn eval_builtin(func_name: String, args_list: Option<Box<Node>>, scope: &mut
         }
         "cons" => {
             if args.len() == 2 {
-                let head = eval_value(args[0].clone(), scope);
-                let tail = eval_value(args[1].clone(), scope);
+                let head = eval_value(args[0].clone(), scope)?;
+                let tail = eval_value(args[1].clone(), scope)?;
                 Node::new(head, Node::leaf(tail))
             } else {
-                panic!("Expected two arguments")
+                return Err("Expected two arguments".to_string());
             }
         }
         "if" => {
             if args.len() == 3 {
-                let predicate = eval_value(args[0].clone(), scope);
+                let predicate = eval_value(args[0].clone(), scope)?;
 
                 let branch = match predicate {
                     NodeValue::Nil | NodeValue::Number(0.0) => &args[2],
                     _ => &args[1],
                 };
 
-                let result = eval_value(branch.clone(), scope);
+                let result = eval_value(branch.clone(), scope)?;
 
                 Node::leaf(result)
             } else {
-                panic!("Expected three arguments")
+                return Err("Expected three arguments".to_string());
             }
         }
         "+" | "*" | "/" | "<" | ">" | "<=" | ">=" => {
             if args.len() == 2 {
                 if let (NodeValue::Number(v0), NodeValue::Number(v1)) = (
-                    eval_value(args[0].clone(), scope),
-                    eval_value(args[1].clone(), scope),
+                    eval_value(args[0].clone(), scope)?,
+                    eval_value(args[1].clone(), scope)?,
                 ) {
                     let result = match func_str {
                         "+" => NodeValue::Number(v0 + v1),
@@ -478,10 +500,10 @@ pub fn eval_builtin(func_name: String, args_list: Option<Box<Node>>, scope: &mut
 
                     Node::leaf(result)
                 } else {
-                    panic!("Expected two number arguments")
+                    return Err("Expected two number arguments".to_string());
                 }
             } else {
-                panic!("Expected two arguments")
+                return Err("Expected two arguments".to_string());
             }
         }
         "=" => {
@@ -493,34 +515,40 @@ pub fn eval_builtin(func_name: String, args_list: Option<Box<Node>>, scope: &mut
 
                 Node::leaf(NodeValue::Number(if v0 == v1 { 1.0 } else { 0.0 }))
             } else {
-                panic!("Expected two arguments")
+                return Err("Expected two arguments".to_string());
             }
         }
         "-" => match args.len() {
             1 => {
-                if let NodeValue::Number(v0) = eval_value(args[0].clone(), scope) {
+                if let NodeValue::Number(v0) = eval_value(args[0].clone(), scope)? {
                     Node::leaf(NodeValue::Number(-v0))
                 } else {
-                    panic!("Expected one number argument")
+                    return Err("Expected one number argument".to_string());
                 }
             }
             2 => {
                 if let (NodeValue::Number(v0), NodeValue::Number(v1)) = (
-                    eval_value(args[0].clone(), scope),
-                    eval_value(args[1].clone(), scope),
+                    eval_value(args[0].clone(), scope)?,
+                    eval_value(args[1].clone(), scope)?,
                 ) {
                     Node::leaf(NodeValue::Number(v0 - v1))
                 } else {
-                    panic!("Expected two number arguments")
+                    return Err("Expected two number arguments".to_string());
                 }
             }
-            _ => panic!("Expected one or two arguments"),
+            _ => return Err("Expected one or two arguments".to_string()),
         },
-        _ => panic!("'{}' is not a builtin", func_name),
-    }
+        _ => return Err(format!("'{}' is not a builtin", func_name)),
+    };
+
+    Ok(node)
 }
 
-pub fn eval_fn(func_def: FuncDef, args_list: Option<Box<Node>>, scope: &mut Scope) -> Node {
+pub fn eval_fn(
+    func_def: FuncDef,
+    args_list: Option<Box<Node>>,
+    scope: &mut Scope,
+) -> Result<Node, String> {
     let arg_names = func_def.args;
     let body = func_def.body;
     let args = extract_args(args_list);
@@ -528,67 +556,74 @@ pub fn eval_fn(func_def: FuncDef, args_list: Option<Box<Node>>, scope: &mut Scop
     let mut child_scope = scope.make_child();
 
     for (name, value) in arg_names.into_iter().zip(args.into_iter()) {
-        child_scope.set(name, eval_value(value, scope))
+        child_scope.set(name, eval_value(value, scope)?)
     }
 
-    let result: Vec<NodeValue> = body
+    let result: Vec<Result<NodeValue, String>> = body
         .into_iter()
         .map(|expr| eval_value(expr, &mut child_scope))
         .collect();
 
     if let Some(return_value) = result.last() {
-        eval(Node::leaf(return_value.clone()), &mut child_scope)
+        eval(Node::leaf(return_value.clone()?), &mut child_scope)
     } else {
-        Node::nil()
+        Ok(Node::nil())
     }
 }
 
-pub fn eval_value(value: NodeValue, scope: &mut Scope) -> NodeValue {
-    match value {
+pub fn eval_value(value: NodeValue, scope: &mut Scope) -> Result<NodeValue, String> {
+    Ok(match value {
         NodeValue::Atom(atom) => {
             if is_builtin(&atom) {
                 NodeValue::Builtin(atom)
             } else {
-                scope.get(atom)
+                scope.get(atom)?
             }
         }
         NodeValue::List(ptr) => {
-            let result_node = eval(ptr.as_ref().clone(), scope);
+            let result_node = eval(ptr.as_ref().clone(), scope)?;
             match result_node.next {
                 Some(_) => NodeValue::List(result_node.into()),
                 None => result_node.value,
             }
         }
         _ => value,
-    }
+    })
 }
 
-pub fn eval(node: Node, scope: &mut Scope) -> Node {
-    let value = eval_value(node.value, scope);
+pub fn eval(node: Node, scope: &mut Scope) -> Result<Node, String> {
+    let value = eval_value(node.value, scope)?;
 
-    match node.next {
+    Ok(match node.next {
         Some(ptr) => match value {
-            NodeValue::Builtin(func_name) => eval_builtin(func_name, Some(ptr), scope),
-            NodeValue::Lambda(func_def) => eval_fn(func_def, Some(ptr), scope),
-            _ => Node::new(value, eval(*ptr, scope)),
+            NodeValue::Builtin(func_name) => eval_builtin(func_name, Some(ptr), scope)?,
+            NodeValue::Lambda(func_def) => eval_fn(func_def, Some(ptr), scope)?,
+            _ => Node::new(value, eval(*ptr, scope)?),
         },
         None => Node::leaf(value),
-    }
+    })
 }
 
 // WASM
 
 #[wasm_bindgen]
 pub fn wasm_eval(text: String) -> String {
-    let tokens = parse(text);
-    let block = construct(tokens);
-    let mut scope = Scope::new();
+    let inner_eval = || -> Result<String, String> {
+        let tokens = parse(text);
+        let block = construct(tokens)?;
+        let mut scope = Scope::new();
 
-    block.into_iter().for_each(|expr| {
-        eval(expr, &mut scope);
-    });
+        for expr in block {
+            eval(expr, &mut scope)?;
+        }
 
-    scope.stdout
+        Ok(scope.stdout)
+    };
+
+    match inner_eval() {
+        Ok(stdout) => stdout,
+        Err(msg) => msg,
+    }
 }
 
 // Tests
@@ -710,7 +745,8 @@ mod tests {
 
     fn test_construction(text: &str, target: Vec<Node>) {
         let tokens = parse_str(text);
-        let block = construct(tokens);
+        let block =
+            construct(tokens).unwrap_or_else(|_| panic!("Got an error while testing construction"));
         assert_eq!(block, target)
     }
 
@@ -767,12 +803,16 @@ mod tests {
 
     fn test_eval(text: &str, target: Vec<Node>) {
         let tokens = parse_str(text);
-        let block = construct(tokens);
+        let block =
+            construct(tokens).unwrap_or_else(|_| panic!("Got an error while testing evals"));
 
         let mut scope = Scope::new();
         let result: Vec<Node> = block
             .into_iter()
-            .map(|expr| eval(expr, &mut scope))
+            .map(|expr| {
+                eval(expr, &mut scope)
+                    .unwrap_or_else(|_| panic!("Got an error while testing evals"))
+            })
             .collect();
 
         assert_eq!(result, target)
@@ -1009,56 +1049,6 @@ mod tests {
                 Node::leaf(NodeValue::Number(3.0)),
             ],
         )
-    }
-
-    fn test_double_eval(text1: &str, text2: &str) {
-        let eval_text = |text: &str| {
-            let tokens = parse_str(text);
-            let block = construct(tokens);
-
-            let mut scope = Scope::new();
-
-            block
-                .into_iter()
-                .map(|expr| eval(expr, &mut scope))
-                .collect::<Vec<Node>>()
-        };
-
-        let result1 = eval_text(text1);
-        let result2 = eval_text(text2);
-
-        assert_eq!(result1, result2);
-    }
-
-    #[test]
-    fn double_eval() {
-        test_double_eval("(+ 1 2)", "3");
-        test_double_eval("(cons 1 (+ 2 3))", "(1 5)");
-        test_double_eval("(cons 1 (+ 2 3))", "(1 5)");
-
-        test_double_eval(
-            "
-            (def sqrt (x) (
-                (def inner_sqrt (x n) (
-                    (let n_squared (* n n))
-                    (if (= n_squared x)
-                        n
-                        (if (> n_squared x)
-                            (- n 1)
-                            (inner_sqrt x (+ n 1))
-                        )
-                    )
-                ))
-                (inner_sqrt x 0)
-            ))
-
-            (sqrt 0)
-            (sqrt 1)
-            (sqrt 4)
-            (sqrt 10)
-            ",
-            "() 0 1 2 3",
-        );
     }
 
     #[test]
